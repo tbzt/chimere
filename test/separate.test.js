@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { separate, chunkOffsets, transitionWindow } from '../src/separate.js';
 
 test('chunk offsets cover the whole signal', () => {
+  // Same as Demucs apply_model: range(0, length, stride).
   const offs = chunkOffsets(1000, 400, 0.25);
-  assert.deepEqual(offs, [0, 300, 600]);
+  assert.deepEqual(offs, [0, 300, 600, 900]);
   assert.ok(offs.at(-1) + 400 >= 1000);
 });
 
@@ -61,4 +62,23 @@ test('chunk check accepts stems that add up to the input and rejects zeros', asy
   nan[5] = NaN;
   assert.equal(checkChunk(input, nan, segment, 4).reason, 'NaN');
   assert.equal(checkChunk(new Float32Array(2 * segment), zeros, segment, 4).ok, true);
+});
+
+test('a signal shorter than one segment is centred and comes back aligned', async () => {
+  const n = 150;
+  const segment = 400;
+  const left = Float32Array.from({ length: n }, (_, i) => Math.sin(i / 3));
+  const right = left.map((x) => -x);
+  let seen = null;
+  const runChunk = async (input) => {
+    seen = input.slice();
+    const out = new Float32Array(2 * 2 * segment);
+    out.set(input, 0);
+    return out;
+  };
+  const [s0] = await separate(left, right, { segment, overlap: 0.25, stemCount: 2, runChunk });
+  // Centred: (400 - 150) / 2 = 125 zeros before the signal.
+  assert.equal(seen[124], 0);
+  assert.notEqual(seen[126], 0);
+  for (let i = 0; i < n; i++) assert.ok(Math.abs(s0[0][i] - left[i]) < 1e-4, `left ${i}`);
 });

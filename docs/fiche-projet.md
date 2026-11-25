@@ -116,6 +116,7 @@ L'interface reprend les codes des applis de streaming musical (thème sombre, ba
 Six étapes, chacune livrée et testée à l'oreille avant la suivante.
 
 1. **Preuve de faisabilité** : page minimale qui charge le modèle depuis Hugging Face, sépare un extrait de 30 s et joue la voix seule ; déployée sur GitHub Pages pour vérifier WebGPU, coi-serviceworker et les temps de calcul. Comparer à l'oreille avec Demucs natif sur le même extrait.
+   *Validée le 25 nov. 2026* : déployée sur GitHub Pages ; WebGPU (GTX 1060, Chrome sans options de lancement) donne le même résultat que WASM ; sur un extrait de 30 s, les pistes de Chimère sont identiques à celles de Demucs natif (≥ 58 dB par piste) et sonnent pareil. Les artefacts restants sont ceux du modèle `htdemucs`.
 2. **Squelette et design** : layout sombre (barre latérale, zone centrale, lecteur bas), variables CSS, routage simple entre les vues.
    *Fait le 25 nov. 2026* : routage par ancre (`#/separer`…), lecteur bas (lecture/pause, position, volume général, barre d'espace), police Inter, logo en formes d'onde ; Bibliothèque et Mashups sont des vues vides en attendant les étapes 3 et 5.
 3. **MVP complet** : import, séparation dans un Worker, lecteur multipiste, export WAV, cache IndexedDB. Tester le décodage M4A sous Firefox Linux.

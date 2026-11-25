@@ -12,14 +12,14 @@ export function transitionWindow(n) {
   return w;
 }
 
-/** Offsets of each chunk start for a signal of `length` samples. */
+/**
+ * Offsets of each chunk start for a signal of `length` samples, as in Demucs
+ * apply_model: range(0, length, stride).
+ */
 export function chunkOffsets(length, segment, overlap) {
-  const stride = Math.max(1, Math.round(segment * (1 - overlap)));
+  const stride = Math.max(1, Math.trunc(segment * (1 - overlap)));
   const offsets = [];
-  for (let off = 0; ; off += stride) {
-    offsets.push(off);
-    if (off + segment >= length) break;
-  }
+  for (let off = 0; off < length; off += stride) offsets.push(off);
   return offsets;
 }
 
@@ -67,17 +67,24 @@ export async function separate(left, right, { segment, overlap, stemCount, runCh
   for (let k = 0; k < offsets.length; k++) {
     const off = offsets[k];
     const n = Math.min(segment, length - off);
+    // A short (last) chunk is centred in the model window and padded with the
+    // real audio around it, zeros only outside the signal (Demucs
+    // TensorChunk.padded); its output is centre-trimmed back to n samples.
+    const lead = (segment - n) >> 1;
+    const start = off - lead;
     input.fill(0);
-    for (let i = 0; i < n; i++) {
-      input[i] = (left[off + i] - mean) / std;
-      input[segment + i] = (right[off + i] - mean) / std;
+    const i0 = Math.max(0, -start);
+    const i1 = Math.min(segment, length - start);
+    for (let i = i0; i < i1; i++) {
+      input[i] = (left[start + i] - mean) / std;
+      input[segment + i] = (right[start + i] - mean) / std;
     }
 
     const stems = await runChunk(input);
 
     for (let s = 0; s < stemCount; s++) {
       for (let c = 0; c < 2; c++) {
-        const src = (s * 2 + c) * segment;
+        const src = (s * 2 + c) * segment + lead;
         const dst = out[s][c];
         for (let i = 0; i < n; i++) dst[off + i] += stems[src + i] * window[i];
       }

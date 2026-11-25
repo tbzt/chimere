@@ -25,7 +25,10 @@ The spec is `docs/fiche-projet.md` (French); read it before any feature work.
   and frequency branch `[1, 4, 4, 2048, 336]`; stem order **drums, bass, other, vocals**.
 - STFT / iSTFT are done in JS by the `demucs-web` package (`prepareModelInput`,
   `standaloneMask`, `standaloneIspec`); stem = time branch + iSTFT(freq branch).
-- Longer audio = overlap-add (25 % overlap, triangular window) in `src/separate.js`.
+- Longer audio = overlap-add in `src/separate.js`, a port of Demucs `apply_model` (25 % overlap,
+  triangular window, offsets `range(0, length, stride)`, short last chunk centred on real audio).
+  Checked 25 nov. 2026 against native Demucs 4.1 (`htdemucs`, shifts=0) on a 30 s excerpt:
+  ≥ 58 dB SDR on every stem, so remaining artefacts are the model's, not the pipeline's.
 - Cached in the Cache API under `chimere-model-v1`; bump the cache name when changing the model.
 - `StemSplitio/htdemucs-onnx` (waveform-only graph) fails in onnxruntime-web 1.31 with
   `std::bad_alloc` (fp16 and fp32). Don't switch back without re-testing.
