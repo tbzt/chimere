@@ -5,6 +5,7 @@ import { decodeFile, extract, channels, Player } from './audio.js';
 import { computePeaks } from './wav.js';
 import { songId, getSong, saveSong, updateMeta, loadTracks, listSongs, deleteSong } from './library.js';
 import { keyName, keyNameFr, camelot } from './analysis.js';
+import { initMashup } from './mashup.js';
 import { startRouter } from './router.js';
 
 const $ = (id) => document.getElementById(id);
@@ -96,9 +97,12 @@ const encoderJob = jobWorker(
   new Worker(new URL('./encoder.worker.js', import.meta.url), { type: 'module', name: 'chimere-encoder' }),
 );
 const encode = (type, payload, transfer) => encoderJob({ type, ...payload }, transfer);
+let mashup = null; // set once the helpers below exist
 const analysisJob = jobWorker(
   new Worker(new URL('./analysis.worker.js', import.meta.url), { type: 'module', name: 'chimere-analysis' }),
 );
+
+mashup = initMashup({ player, encode, log: (t) => log(t) });
 
 // --- Environment (main thread view; the worker confirms its own) ---
 async function showEnv() {
@@ -707,6 +711,7 @@ async function renderLibrary() {
     log(`Bibliothèque illisible : ${e.message}`);
   }
   $('library-empty').hidden = songs.length > 0;
+  mashup?.refresh();
   const list = $('library-list');
   list.innerHTML = '';
   for (const meta of songs) {

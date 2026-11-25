@@ -118,11 +118,62 @@
         </section>
 
         <!-- Mashups -->
-        <section class="view" data-view="mashups" hidden>
-          <h1>Mashups</h1>
-          <div class="empty">
-            <p>Bientôt : la voix d'un morceau sur l'instrumental d'un autre.</p>
-            <p class="muted">Timeline, calage du tempo et de la tonalité, export du mix. Prévu en V2.</p>
+        <section class="view view-wide" data-view="mashups" hidden>
+          <div class="mash-head">
+            <input id="mx-name" class="title-input" aria-label="Nom du mashup" />
+            <button id="mx-play" class="primary">Écouter</button>
+          </div>
+          <div class="mash-tools">
+            <div class="field">
+              <label for="mx-bpm" class="muted small">Tempo du projet</label>
+              <input id="mx-bpm" class="num" type="number" min="40" max="250" step="0.1" />
+              <span class="muted small">BPM</span>
+            </div>
+            <div class="field">
+              <label for="mx-snap" class="muted small">Magnétisme</label>
+              <select id="mx-snap">
+                <option value="bar">Mesure</option>
+                <option value="beat">Temps</option>
+                <option value="off">Libre</option>
+              </select>
+              <span class="muted small">(Alt : libre)</span>
+            </div>
+            <div class="field">
+              <span class="muted small">Zoom</span>
+              <button class="tbtn" id="mx-zoom-out" aria-label="Dézoomer">−</button>
+              <button class="tbtn" id="mx-zoom-in" aria-label="Zoomer">+</button>
+            </div>
+            <button id="mx-new">Nouveau mashup</button>
+          </div>
+
+          <div class="mash">
+            <aside class="sources" aria-label="Pistes disponibles">
+              <h2>Pistes</h2>
+              <p class="muted small">Glissez une piste sur la timeline, ou cliquez pour l'ajouter à une nouvelle ligne.</p>
+              <ul id="mx-sources"></ul>
+            </aside>
+            <div class="tl-scroll" id="mx-scroll">
+              <div class="timeline" id="mx-timeline"></div>
+            </div>
+          </div>
+
+          <div class="card inspector" id="mx-inspector" hidden>
+            <div class="card-head">
+              <h2 id="mx-clip-title">Clip</h2>
+              <span class="muted small tabular" id="mx-clip-info"></span>
+            </div>
+            <div class="inspector-grid">
+              <label>Volume <input type="range" id="mx-gain" min="0" max="1.5" step="0.01" /></label>
+              <label>Panoramique <input type="range" id="mx-pan" min="-1" max="1" step="0.01" /></label>
+              <label>Fondu d'entrée (s) <input type="number" class="num" id="mx-fadein" min="0" step="0.1" /></label>
+              <label>Fondu de sortie (s) <input type="number" class="num" id="mx-fadeout" min="0" step="0.1" /></label>
+              <div class="field">
+                <span class="muted small">Décalage fin</span>
+                <button class="tbtn wide" id="mx-nudge-l" title="10 ms plus tôt">−10 ms</button>
+                <button class="tbtn wide" id="mx-nudge-r" title="10 ms plus tard">+10 ms</button>
+              </div>
+              <button id="mx-delete">Supprimer le clip</button>
+            </div>
           </div>
         </section>
 

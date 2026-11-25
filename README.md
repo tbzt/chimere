@@ -5,7 +5,8 @@ puis, à terme, mixage de pistes de plusieurs morceaux. Cahier des charges : [do
 
 **État : étape 4, analyse.** Glissez un morceau, Chimère le sépare en entier, détecte son tempo et
 sa tonalité (notation Camelot, corrigeables à la main), puis on écoute les pistes (solo, muet, volume),
-on les exporte en WAV, et le morceau reste dans la bibliothèque locale.
+on les exporte en WAV, et le morceau reste dans la bibliothèque locale. La vue *Mashups* place des
+pistes de plusieurs morceaux sur une timeline (étape 5 en cours : le calage du tempo arrive).
 
 ## Confidentialité
 

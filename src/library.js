@@ -44,6 +44,23 @@ export async function loadTracks(meta) {
   return out;
 }
 
+/** One track of a song (interleaved int16). */
+export async function loadTrack(id, name) {
+  const pcm = await get(`pcm:${id}:${name}`, store);
+  if (!pcm) throw new Error(`Piste manquante dans le cache : ${name}`);
+  return pcm;
+}
+
+// --- Mashup projects: "project:<id>" → project object (see src/project.js) ---
+export const saveProject = (project) => set(`project:${project.id}`, project, store);
+export const loadProject = (id) => get(`project:${id}`, store);
+export const deleteProject = (id) => del(`project:${id}`, store);
+export async function listProjects() {
+  const projectKeys = (await keys(store)).filter((k) => String(k).startsWith('project:'));
+  const projects = await getMany(projectKeys, store);
+  return projects.filter(Boolean).sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
 export async function deleteSong(id) {
   const meta = await getSong(id);
   await del(`meta:${id}`, store);

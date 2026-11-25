@@ -1,4 +1,5 @@
 import { SAMPLE_RATE } from './config.js';
+import { clipEnvelope, clipGainAt } from './project.js';
 
 /**
  * Read a file, hash-ready bytes first (decodeAudioData detaches the buffer),
@@ -30,21 +31,26 @@ export function channels(buffer) {
 }
 
 /**
- * Multitrack player for the bottom bar. All tracks start on the same
- * AudioContext time, so they stay sample-aligned; each has its own gain
- * (volume, mute, solo) before a master gain. Position comes from the
- * AudioContext clock only. Emits 'change' on track, state or position jumps.
+ * Multitrack player for the bottom bar. Lanes hold clips placed on a common
+ * timeline; every clip is scheduled on the AudioContext clock, so lanes stay
+ * sample-aligned. Graph: source → clip gain (fades) → panner → lane gain
+ * (volume, mute, solo) → master. Emits 'change' on load, state or seek.
+ *
+ * lane = { id, label, color, volume?, muted?, solo?, clips?, buffer? }
+ * clip = { buffer, at = 0, offset = 0, length?, gain = 1, pan = 0, fadeIn = 0, fadeOut = 0 }
+ * A lane with `buffer` and no `clips` is one clip covering the whole buffer.
  */
 export class Player extends EventTarget {
   constructor() {
     super();
     this.ctx = null;
     this.master = null;
-    this.tracks = []; // { id, label, color, buffer, volume, muted, solo, gain, source }
+    this.tracks = []; // lanes: { ..., gain, clips: [{ ..., nodes }] }
     this.meta = null;
-    this.offset = 0; // seconds into the tracks when paused
-    this.startedAt = 0; // ctx time matching offset 0 while playing
+    this.offset = 0; // timeline seconds when paused
+    this.startedAt = 0; // ctx time matching timeline 0 while playing
     this.isPlaying = false;
+    this.endMarker = null;
     this._volume = 0.9;
   }
 
@@ -72,7 +78,9 @@ export class Player extends EventTarget {
   }
 
   get duration() {
-    return this.tracks.reduce((m, t) => Math.max(m, t.buffer.duration), 0);
+    let end = 0;
+    for (const t of this.tracks) for (const c of t.clips) end = Math.max(end, c.at + c.length);
+    return end;
   }
 
   get position() {
@@ -90,20 +98,33 @@ export class Player extends EventTarget {
   }
 
   /**
-   * Replace all tracks. Each track: { id, label, color, buffer, volume?, muted?, solo? }.
-   * keepPosition keeps the playhead (A/B between versions of the same audio);
-   * the play state is kept either way.
+   * Replace all lanes. keepPosition keeps the playhead (A/B between versions,
+   * or live edits of a mashup); the play state is kept either way.
    */
-  load(tracks, meta, { keepPosition = false } = {}) {
+  load(lanes, meta, { keepPosition = false } = {}) {
     const ctx = this._ensureCtx();
     const wasPlaying = this.isPlaying;
     const pos = keepPosition ? this.position : 0;
     this._stopSources();
     for (const t of this.tracks) t.gain.disconnect();
-    this.tracks = tracks.map((t) => {
+    this.tracks = lanes.map((lane) => {
       const gain = ctx.createGain();
       gain.connect(this.master);
-      return { volume: 1, muted: false, solo: false, ...t, gain, source: null };
+      const clips = (lane.clips ?? [{ buffer: lane.buffer }]).map((c) => {
+        const offset = c.offset ?? 0;
+        return {
+          at: 0,
+          gain: 1,
+          pan: 0,
+          fadeIn: 0,
+          fadeOut: 0,
+          ...c,
+          offset,
+          length: Math.min(c.length ?? Infinity, c.buffer.duration - offset),
+          nodes: null,
+        };
+      });
+      return { volume: 1, muted: false, solo: false, ...lane, clips, gain };
     });
     this.meta = meta;
     this._applyGains(true);
@@ -124,7 +145,7 @@ export class Player extends EventTarget {
     this._emit();
   }
 
-  /** A track is heard if it is soloed, or if nothing is soloed and it isn't muted. */
+  /** A lane is heard if it is soloed, or if nothing is soloed and it isn't muted. */
   audible(t) {
     const anySolo = this.tracks.some((x) => x.solo);
     return anySolo ? t.solo : !t.muted;
@@ -167,7 +188,7 @@ export class Player extends EventTarget {
     this._emit();
   }
 
-  /** Stop and forget the tracks (frees the audio memory). */
+  /** Stop and forget the lanes (frees the audio memory). */
   unload() {
     this._stopSources();
     for (const t of this.tracks) t.gain.disconnect();
@@ -178,45 +199,93 @@ export class Player extends EventTarget {
   }
 
   _startSources() {
-    const when = this.ctx.currentTime + 0.03;
-    this.startedAt = when - this.offset;
-    const longest = this.tracks.reduce((a, t) => (t.buffer.duration > a.buffer.duration ? t : a));
+    const ctx = this.ctx;
+    const when = ctx.currentTime + 0.03;
+    const pos = this.offset;
+    this.startedAt = when - pos;
     for (const t of this.tracks) {
-      const src = this.ctx.createBufferSource();
-      src.buffer = t.buffer;
-      src.connect(t.gain);
-      if (this.offset < t.buffer.duration) src.start(when, this.offset);
-      t.source = src;
-      if (t === longest) {
-        src.onended = () => {
-          // Only a natural end reaches here: _stopSources clears onended first.
-          if (t.source !== src) return;
-          this._stopSources();
-          this.offset = 0;
-          this._emit();
-        };
+      for (const c of t.clips) {
+        const end = c.at + c.length;
+        if (end <= pos) continue;
+        const into = Math.max(0, pos - c.at); // seconds already played of this clip
+        const startAt = when + Math.max(0, c.at - pos);
+        const src = ctx.createBufferSource();
+        src.buffer = c.buffer;
+        const g = ctx.createGain();
+        scheduleEnvelope(g.gain, c, into, startAt);
+        let out = g;
+        if (c.pan) {
+          const p = ctx.createStereoPanner();
+          p.pan.value = c.pan;
+          g.connect(p);
+          out = p;
+        }
+        src.connect(g);
+        out.connect(t.gain);
+        src.start(startAt, c.offset + into, c.length - into);
+        c.nodes = { src, g, out };
       }
     }
+    // End of the timeline, detected on the audio clock.
+    const marker = ctx.createConstantSource();
+    marker.offset.value = 0;
+    marker.connect(this.master);
+    marker.start(when);
+    marker.stop(when + Math.max(0, this.duration - pos));
+    marker.onended = () => {
+      if (this.endMarker !== marker) return;
+      this._stopSources();
+      this.offset = 0;
+      this._emit();
+    };
+    this.endMarker = marker;
     this.isPlaying = true;
   }
 
   _stopSources() {
     for (const t of this.tracks) {
-      const src = t.source;
-      if (!src) continue;
-      t.source = null;
-      src.onended = null;
-      try {
-        src.stop();
-      } catch {
-        // never started (offset past this track's end)
+      for (const c of t.clips) {
+        if (!c.nodes) continue;
+        const { src, g, out } = c.nodes;
+        c.nodes = null;
+        try {
+          src.stop();
+        } catch {
+          // not started yet
+        }
+        src.disconnect();
+        g.disconnect();
+        out.disconnect();
       }
-      src.disconnect();
+    }
+    if (this.endMarker) {
+      const m = this.endMarker;
+      this.endMarker = null;
+      m.onended = null;
+      try {
+        m.stop();
+      } catch {
+        // already stopped
+      }
+      m.disconnect();
     }
     this.isPlaying = false;
   }
 
   _emit() {
     this.dispatchEvent(new Event('change'));
+  }
+}
+
+/**
+ * Program a clip's gain (level and linear fades) on an AudioParam, for a
+ * playback that starts `into` seconds into the clip at context time `startAt`.
+ */
+export function scheduleEnvelope(param, clip, into, startAt) {
+  const pts = clipEnvelope(clip);
+  param.setValueAtTime(clipGainAt(clip, into), startAt);
+  for (const [t, g] of pts) {
+    if (t <= into) continue;
+    param.linearRampToValueAtTime(g, startAt + (t - into));
   }
 }

@@ -58,14 +58,18 @@ The spec is `docs/fiche-projet.md` (French); read it before any feature work.
 - `src/router.js` — hash router (`#/bibliotheque`, `#/separer`, `#/mashups`, `#/reglages`)
 - `src/worker.js` — model download/cache, ONNX session, per-chunk STFT + inference + iSTFT
 - `src/separate.js` — pure chunking / overlap-add logic (no DOM, no ORT)
-- `src/audio.js` — decoding, resampling, multitrack `Player` (all sources started on one
-  AudioContext time; per-track gain for volume/mute/solo; master gain)
+- `src/audio.js` — decoding, resampling, `Player`: lanes of clips on one timeline, every clip
+  scheduled on the AudioContext clock (source → clip gain with fades → panner → lane gain → master);
+  the end of the timeline is a ConstantSource stopped on the audio clock. The song view is the
+  special case of one full-length clip per lane
+- `src/project.js` — pure mashup model (lanes, clips placed in beats, source part in seconds,
+  snapping, fades); `src/mashup.js` — Mashups view (sources, timeline, inspector, autosave)
 - `src/wav.js` — pure PCM helpers (int16, WAV, mix, peaks); `src/encoder.worker.js` runs them
 - `src/analysis.js` — pure tempo (onset flux + comb autocorrelation, on drums) and key (chroma +
   Krumhansl profiles, on bass + other) estimation, Camelot codes; run by `src/analysis.worker.js`.
   Results live in `meta.analysis` ({ auto, bpm, tonic, mode }; manual edits keep `auto`)
 - `src/library.js` — IndexedDB library (idb-keyval): `meta:<id>` + `pcm:<id>:<track>` int16;
-  id = SHA-256 of the file bytes + model revision
+  id = SHA-256 of the file bytes + model revision; `project:<id>` for mashups
 - `src/config.js` — model URL, constants
 - `public/coi-serviceworker.min.js` — copied from node_modules by `npm run prepare-static`
   (git-ignored); provides COOP/COEP on GitHub Pages
@@ -76,7 +80,7 @@ The spec is `docs/fiche-projet.md` (French); read it before any feature work.
 - `npm install`
 - `npm run dev` — dev server with COOP/COEP headers set by Vite
 - `npm run build` / `npm run preview`
-- `npm test` — Node unit tests (`src/separate.js`, `src/router.js`, `src/wav.js`, `src/analysis.js`)
+- `npm test` — Node unit tests (`separate`, `router`, `wav`, `analysis`, `project`)
 - npm/node live in `~/.local/bin` (not on the default PATH of tool shells)
 
 ## Conventions

@@ -30,10 +30,10 @@ Le MVP sépare et fait écouter ; la V2 ajoute le mixage multi-morceaux ; la V3 
 
 - [ ] Bibliothèque locale des morceaux séparés (liste, recherche, suppression)
 - [x] Analyse automatique : tempo (BPM), tonalité, notation Camelot pour repérer les tonalités compatibles
-- [ ] Projet de mashup : une timeline où l'on place des pistes issues de morceaux différents (ex. voix de A sur instrumental de B)
+- [x] Projet de mashup : une timeline où l'on place des pistes issues de morceaux différents (ex. voix de A sur instrumental de B)
 - [ ] Calage du tempo (time-stretch) et transposition (pitch-shift) par piste, sans changer l'autre paramètre — pré-calculés dans un Worker à chaque changement, puis lus comme des buffers ordinaires
-- [ ] Grille de mesures et magnétisme sur les temps ; décalage manuel fin
-- [ ] Volume, panoramique, fondus d'entrée et de sortie par clip
+- [x] Grille de mesures et magnétisme sur les temps ; décalage manuel fin
+- [x] Volume, panoramique, fondus d'entrée et de sortie par clip
 - [ ] Export du mix en WAV (rendu hors temps réel), MP3 en option
 - [ ] Sauvegarde du projet (JSON + références aux pistes en cache), réouverture
 
@@ -124,6 +124,7 @@ Six étapes, chacune livrée et testée à l'oreille avant la suivante.
 4. **Analyse** : BPM, tonalité, Camelot, correction manuelle.
    *Livrée et validée à l'écoute le 25 nov. 2026* : analyse maison sans dépendance, lancée après la séparation dans un Worker (environ 1 s). Tempo mesuré sur la batterie séparée (flux spectral, autocorrélation en peigne, a priori centré sur 120 BPM) ; tonalité sur basse + reste (chroma, profils de Krumhansl). Correction à la main : saisie, ×2, ÷2, tap tempo, choix de la tonalité, retour aux valeurs détectées ; valeurs gardées dans la bibliothèque. Contrôle contre essentia sur 6 morceaux : 5 d'accord à 0,6 BPM près et même tonalité. Limites connues : extraits courts peu fiables ; au-delà de 160 BPM, le tempo peut sortir à moitié (bouton ×2).
 5. **Mashup** : timeline, placement des pistes, time-stretch et pitch-shift, mixage, export du mix, sauvegarde du projet.
+   Découpée en trois livraisons. *5.1, timeline (25 nov. 2026)* : pistes de la bibliothèque à glisser (ou cliquer) sur une timeline en mesures, magnétisme mesure / temps / libre (Alt), déplacement des clips entre lignes, solo / muet / volume par ligne, volume, panoramique, fondus et décalage fin (±10 ms) par clip, tempo du projet repris du premier morceau, alerte quand le tempo d'un clip diffère, sauvegarde automatique du projet en cours. Les clips jouent encore à leur vitesse d'origine. *5.2* : calage du tempo et de la tonalité (Rubber Band, dans un Worker). *5.3* : export du mix, liste des projets.
 6. **Finitions** : PWA hors ligne, raccourcis clavier, tests sur Chrome, Edge, Firefox et Safari.
 
 ## Sources
