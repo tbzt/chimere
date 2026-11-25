@@ -69,7 +69,7 @@ Versions et licences vérifiées le 25 nov. 2026 (registre npm, cartes Hugging F
 | Export | WAV maison ; MP3 via lamejs 1.2.1 ou @breezystack/lamejs 1.2.7 | — | LGPL-3.0 | WAV d'abord, MP3 en option |
 | Stockage | idb-keyval 6.3.0 + Cache API pour le modèle | — | Apache-2.0 / natif | Le modèle n'est téléchargé qu'une fois |
 
-**Licence du dépôt** : toutes ces briques sont compatibles avec l'**AGPL-3.0**. C'est le choix le plus simple ; la voie sans AGPL (web-audio-beat-detector, détection de tonalité maison, SoundTouch) reste possible.
+**Licence du dépôt** : **AGPL-3.0 ou ultérieure**, choisie le 25 nov. 2026 (fichier `LICENSE`). Toutes les briques du tableau sont compatibles ; Rubber Band (GPL) est donc utilisable pour le time-stretch.
 
 ### Points techniques à traiter dès le départ
 

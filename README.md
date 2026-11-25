@@ -36,6 +36,12 @@ Le serveur de dev envoie lui-même les en-têtes COOP/COEP. En production (GitHu
 
 Déploiement : activer *Settings → Pages → Source : GitHub Actions* ; chaque push sur `main` déploie.
 
+## Licence
+
+Chimère est un logiciel libre sous licence [GNU AGPL v3](LICENSE) ou toute version ultérieure.
+Si vous modifiez l'application et la mettez à disposition sur un réseau, vous devez en publier
+le code source modifié.
+
 ## Crédits
 
 - Modèle HTDemucs (Demucs v4, Meta AI), MIT ; export ONNX et STFT JS par
