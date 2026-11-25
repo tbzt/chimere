@@ -49,11 +49,13 @@
         <!-- Bibliothèque -->
         <section class="view" data-view="bibliotheque" hidden>
           <h1>Bibliothèque</h1>
-          <div class="empty">
+          <p class="muted lead">Les morceaux séparés restent sur cette machine (IndexedDB) : les rouvrir ne relance pas le calcul.</p>
+          <div class="empty" id="library-empty">
             <p>Aucun morceau séparé pour l'instant.</p>
             <p class="muted">Les morceaux que vous séparez seront gardés ici, sur votre machine, pour ne pas les recalculer.</p>
             <a class="button primary" href="#/separer">Séparer un morceau</a>
           </div>
+          <ul class="library" id="library-list"></ul>
         </section>
 
         <!-- Séparer -->
@@ -66,34 +68,35 @@
 
           <div class="card">
             <div class="card-head">
-              <h2>Modèle</h2>
+              <h2>Morceau</h2>
               <span class="pill" id="backend-pill">—</span>
             </div>
-            <button id="load" class="primary">Charger le modèle</button>
-            <progress id="dl" max="1" value="0" hidden></progress>
-            <p id="model-status" class="muted"></p>
-          </div>
-
-          <div class="card">
-            <h2>Morceau</h2>
             <label id="drop" class="drop">
               <input type="file" id="file" accept="audio/*,.mp3,.wav,.flac,.m4a" />
-              <span id="drop-text">Glissez un fichier audio ici ou cliquez pour choisir</span>
+              <span id="drop-text">Glissez un fichier audio ici (MP3, WAV, FLAC, M4A) ou cliquez pour choisir</span>
             </label>
-            <div class="row">
-              <label>Début de l'extrait (s) <input type="number" id="start" value="30" min="0" step="1" /></label>
-              <label>Durée (s) <input type="number" id="dur" value="30" min="5" max="60" step="1" /></label>
+            <p id="file-info" class="muted small"></p>
+            <div class="actions">
+              <button id="run" class="primary" disabled>Séparer</button>
+              <button id="cancel" hidden>Annuler</button>
             </div>
-            <button id="run" class="primary" disabled>Séparer l'extrait</button>
+            <progress id="dl" max="1" value="0" hidden></progress>
+            <p id="model-status" class="muted small"></p>
             <progress id="sep" max="1" value="0" hidden></progress>
-            <p id="sep-status" class="muted"></p>
+            <p id="sep-status" class="muted small"></p>
           </div>
 
-          <div class="card" id="results" hidden>
-            <h2>Écoute</h2>
-            <p class="muted small">Changer de piste garde la position : pratique pour comparer.</p>
-            <div class="stems" id="players"></div>
-            <dl id="stats"></dl>
+          <div class="card" id="song" hidden>
+            <div class="card-head">
+              <h2 id="song-title">—</h2>
+              <span class="muted small tabular" id="song-meta"></span>
+            </div>
+            <div class="tracks" id="tracks"></div>
+            <div class="actions">
+              <button id="export-inst">Exporter l'instrumental</button>
+              <button id="export-all">Exporter les 4 pistes</button>
+            </div>
+            <p id="export-status" class="muted small"></p>
           </div>
         </section>
 
@@ -122,8 +125,8 @@
           <div class="card">
             <h2>Diagnostic WebGPU</h2>
             <p class="muted small">
-              Passe la première fenêtre (7,8&nbsp;s) de l'extrait choisi dans <em>Séparer</em> en WebGPU
-              puis en WASM, et mesure l'écart. Un écart de plus de quelques pourcents signale un calcul
+              Passe une fenêtre de 7,8&nbsp;s, prise au milieu du morceau chargé dans <em>Séparer</em>,
+              en WebGPU puis en WASM, et mesure l'écart. Un écart de plus de quelques pourcents signale un calcul
               faux sur la carte graphique.
             </p>
             <button id="compare" disabled>Comparer WebGPU et WASM</button>

@@ -19,12 +19,12 @@ Le MVP sépare et fait écouter ; la V2 ajoute le mixage multi-morceaux ; la V3 
 
 ### MVP — Séparer et écouter
 
-- [ ] Import par glisser-déposer (MP3, WAV, FLAC, M4A) et décodage via Web Audio, rééchantillonné à 44,1 kHz
-- [ ] Séparation en 4 pistes (voix, batterie, basse, reste) avec barre de progression, dans un Web Worker
-- [ ] Lecteur multipiste : forme d'onde, lecture synchronisée, solo / muet / volume par piste
-- [ ] Export de chaque piste en WAV, et d'un « instrumental » (tout sauf la voix)
-- [ ] Cache local des pistes (IndexedDB, en int16) pour ne pas recalculer un morceau déjà séparé ; `navigator.storage.persist()`
-- [ ] Détection WebGPU et message clair si le navigateur passe en mode lent (WASM)
+- [x] Import par glisser-déposer (MP3, WAV, FLAC, M4A) et décodage via Web Audio, rééchantillonné à 44,1 kHz
+- [x] Séparation en 4 pistes (voix, batterie, basse, reste) avec barre de progression, dans un Web Worker
+- [x] Lecteur multipiste : forme d'onde, lecture synchronisée, solo / muet / volume par piste
+- [x] Export de chaque piste en WAV, et d'un « instrumental » (tout sauf la voix)
+- [x] Cache local des pistes (IndexedDB, en int16) pour ne pas recalculer un morceau déjà séparé ; `navigator.storage.persist()`
+- [x] Détection WebGPU et message clair si le navigateur passe en mode lent (WASM)
 
 ### V2 — Mixer plusieurs morceaux
 
@@ -120,6 +120,7 @@ Six étapes, chacune livrée et testée à l'oreille avant la suivante.
 2. **Squelette et design** : layout sombre (barre latérale, zone centrale, lecteur bas), variables CSS, routage simple entre les vues.
    *Fait le 25 nov. 2026* : routage par ancre (`#/separer`…), lecteur bas (lecture/pause, position, volume général, barre d'espace), police Inter, logo en formes d'onde ; Bibliothèque et Mashups sont des vues vides en attendant les étapes 3 et 5.
 3. **MVP complet** : import, séparation dans un Worker, lecteur multipiste, export WAV, cache IndexedDB. Tester le décodage M4A sous Firefox Linux.
+   *Livré et validé à l'écoute le 25 nov. 2026 (Chrome, WebGPU, morceau entier)* : séparation du morceau entier (temps restant, annulation, modèle chargé dès le dépôt du fichier), vue des pistes (forme d'onde, solo, muet, volume, clic pour se placer), export WAV 16 bits par piste et de l'instrumental (encodage dans un Worker), bibliothèque IndexedDB en int16 (original + 4 pistes, environ 42 Mo par piste pour 4 min) ; un fichier déjà séparé s'ouvre sans recalcul. Reste : tester le M4A sous Firefox Linux.
 4. **Analyse** : BPM, tonalité, Camelot, correction manuelle.
 5. **Mashup** : timeline, placement des pistes, time-stretch et pitch-shift, mixage, export du mix, sauvegarde du projet.
 6. **Finitions** : PWA hors ligne, raccourcis clavier, tests sur Chrome, Edge, Firefox et Safari.

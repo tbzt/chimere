@@ -189,6 +189,66 @@ input[type='range'] { accent-color: var(--accent); }
 }
 .check { display: flex; gap: 8px; align-items: center; color: var(--muted); }
 
+.tabular { font-variant-numeric: tabular-nums; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+/* --- Track view: header (name, S, M, volume, export) | waveform --- */
+.tracks { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.track {
+  display: grid;
+  grid-template-columns: 250px 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+}
+.track-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.chip { width: 10px; height: 10px; border-radius: 50%; background: var(--c); flex: none; }
+.track-name { flex: 1; min-width: 0; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tbtn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--surface-3);
+  font-size: 12px;
+  font-weight: 700;
+  flex: none;
+}
+.tbtn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.tbtn[data-act='solo'][aria-pressed='true'] { background: var(--stem-vocals); color: var(--bg); }
+.tbtn[data-act='mute'][aria-pressed='true'] { background: var(--accent); color: var(--accent-ink); }
+.tvol { width: 64px; flex: none; accent-color: var(--c); }
+.wave-wrap { position: relative; height: 56px; cursor: pointer; min-width: 0; }
+.wave { display: block; width: 100%; height: 100%; }
+.track.off .wave, .track.off .chip { opacity: 0.25; }
+.ph {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--text);
+  pointer-events: none;
+}
+
+/* --- Library --- */
+.library { list-style: none; margin: 16px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.song-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.cover { width: 48px; height: 48px; border-radius: var(--radius-sm); flex: none; }
+.song-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.song-text > * { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 /* Stem buttons: coloured chip on the left, accent outline while playing. */
 .stems { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
 .stems button {
@@ -284,4 +344,7 @@ pre {
   .seek { display: none; }
   .volume { display: none; }
   .now-dot { width: 36px; height: 36px; }
+  .track { grid-template-columns: 1fr; gap: 4px; }
+  .wave-wrap { height: 40px; }
+  .song-card { flex-wrap: wrap; }
 }

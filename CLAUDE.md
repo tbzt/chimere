@@ -55,7 +55,11 @@ The spec is `docs/fiche-projet.md` (French); read it before any feature work.
 - `src/router.js` — hash router (`#/bibliotheque`, `#/separer`, `#/mashups`, `#/reglages`)
 - `src/worker.js` — model download/cache, ONNX session, per-chunk STFT + inference + iSTFT
 - `src/separate.js` — pure chunking / overlap-add logic (no DOM, no ORT)
-- `src/audio.js` — decoding, resampling, `Player` (bottom bar: load/play/pause/seek, master gain)
+- `src/audio.js` — decoding, resampling, multitrack `Player` (all sources started on one
+  AudioContext time; per-track gain for volume/mute/solo; master gain)
+- `src/wav.js` — pure PCM helpers (int16, WAV, mix, peaks); `src/encoder.worker.js` runs them
+- `src/library.js` — IndexedDB library (idb-keyval): `meta:<id>` + `pcm:<id>:<track>` int16;
+  id = SHA-256 of the file bytes + model revision
 - `src/config.js` — model URL, constants
 - `public/coi-serviceworker.min.js` — copied from node_modules by `npm run prepare-static`
   (git-ignored); provides COOP/COEP on GitHub Pages
@@ -66,7 +70,7 @@ The spec is `docs/fiche-projet.md` (French); read it before any feature work.
 - `npm install`
 - `npm run dev` — dev server with COOP/COEP headers set by Vite
 - `npm run build` / `npm run preview`
-- `npm test` — Node unit tests (`src/separate.js`, `src/router.js`)
+- `npm test` — Node unit tests (`src/separate.js`, `src/router.js`, `src/wav.js`)
 - npm/node live in `~/.local/bin` (not on the default PATH of tool shells)
 
 ## Conventions

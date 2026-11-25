@@ -3,8 +3,8 @@
 Séparation de morceaux en pistes (voix, batterie, basse, reste) **entièrement dans le navigateur**,
 puis, à terme, mixage de pistes de plusieurs morceaux. Cahier des charges : [docs/fiche-projet.md](docs/fiche-projet.md).
 
-**État : étape 2, squelette et design.** Interface sombre (barre latérale, lecteur en pied de page) ;
-la vue *Séparer* charge le modèle, sépare un extrait de 30 s et fait écouter chaque piste.
+**État : étape 3, MVP.** Glissez un morceau, Chimère le sépare en entier, puis on écoute les pistes
+(solo, muet, volume), on les exporte en WAV, et le morceau reste dans la bibliothèque locale.
 
 ## Confidentialité
 
@@ -12,6 +12,8 @@ la vue *Séparer* charge le modèle, sépare un extrait de 30 s et fait écouter
 - Le seul accès réseau tiers est le téléchargement du modèle depuis Hugging Face
   (`timcsy/demucs-web-onnx`, 181 Mo, une seule fois, puis mis en cache). Hugging Face voit
   donc votre adresse IP à ce moment-là.
+- Les pistes séparées sont gardées dans le stockage du navigateur (IndexedDB), sur votre machine ;
+  *Bibliothèque → Supprimer* les efface.
 - Aucun cookie, aucune mesure d'audience.
 
 ## Usage légal

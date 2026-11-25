@@ -1,24 +1,48 @@
 import '@fontsource-variable/inter';
 import './style.css';
-import { MODEL, MODEL_CACHE, STEM_LABELS } from './config.js';
-import { decodeFile, extract, Player, mix } from './audio.js';
+import { MODEL, MODEL_CACHE, SAMPLE_RATE, STEM_LABELS } from './config.js';
+import { decodeFile, extract, channels, Player } from './audio.js';
+import { computePeaks } from './wav.js';
+import { songId, getSong, saveSong, loadTracks, listSongs, deleteSong } from './library.js';
 import { startRouter } from './router.js';
 
 const $ = (id) => document.getElementById(id);
 const fmtMs = (ms) => (ms < 1000 ? `${ms.toFixed(0)} ms` : `${(ms / 1000).toFixed(1)} s`);
 const fmtTime = (sec) => {
-  const s = Math.max(0, Math.floor(sec));
+  const s = Math.max(0, Math.round(sec));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 };
+const fmtDuration = (sec) => (sec < 90 ? `${Math.max(1, Math.round(sec))} s` : `${Math.round(sec / 60)} min`);
+const fmtMb = (bytes) => `${Math.round(bytes / 1e6)} Mo`;
+
+// Display order of the tracks; the original is muted by default (A/B reference).
+const TRACKS = [
+  { id: 'vocals', label: STEM_LABELS.vocals, color: '--stem-vocals' },
+  { id: 'drums', label: STEM_LABELS.drums, color: '--stem-drums' },
+  { id: 'bass', label: STEM_LABELS.bass, color: '--stem-bass' },
+  { id: 'other', label: STEM_LABELS.other, color: '--stem-other' },
+  { id: 'original', label: 'Original', color: '--muted', muted: true },
+];
+const STEM_IDS = ['drums', 'bass', 'other', 'vocals'];
+const LONG_SONG_SEC = 10 * 60;
 
 const player = new Player();
 // Exposed for debugging from the console.
 window.chimerePlayer = player;
+
 let worker = null;
 let ready = false;
-let decoded = null;
-let fileName = '';
-let extractDur = 0;
+let backend = null;
+let readyWaiters = [];
+let gpuLikely = false;
+
+/** File currently in the Séparer card: { name, audio, id } */
+let current = null;
+/** Song shown in the track view: { meta, buffers: {id: AudioBuffer}, state: {id: {...}}, peaks } */
+let song = null;
+let sepStart = 0;
+/** File being separated (current may change meanwhile). */
+let sepSource = null;
 
 function log(text) {
   const line = `[${new Date().toLocaleTimeString()}] ${text}\n`;
@@ -27,9 +51,42 @@ function log(text) {
   console.log(text);
 }
 
-function updateRunButton() {
-  $('run').disabled = !(ready && decoded);
-  $('compare').disabled = !(ready && decoded && $('env-backend').textContent === 'WebGPU');
+// --- Speed estimate (per-viewer convenience, so localStorage is fine) ---
+const DEFAULT_RATIO = { webgpu: 0.5, wasm: 3.7 };
+function speedRatio(b) {
+  try {
+    const v = Number(localStorage.getItem(`chimere-ratio-${b}`));
+    if (v > 0) return v;
+  } catch {
+    // storage unavailable
+  }
+  return DEFAULT_RATIO[b];
+}
+function rememberRatio(b, ratio) {
+  try {
+    localStorage.setItem(`chimere-ratio-${b}`, String(ratio));
+  } catch {
+    // storage unavailable
+  }
+}
+
+// --- Encoder worker (int16, WAV) ---
+const encoder = new Worker(new URL('./encoder.worker.js', import.meta.url), { type: 'module', name: 'chimere-encoder' });
+const encoderJobs = new Map();
+let encoderSeq = 0;
+encoder.addEventListener('message', ({ data }) => {
+  const job = encoderJobs.get(data.id);
+  if (!job) return;
+  encoderJobs.delete(data.id);
+  if (data.error) job.reject(new Error(data.error));
+  else job.resolve(data.result);
+});
+function encode(type, payload, transfer = []) {
+  const id = ++encoderSeq;
+  return new Promise((resolve, reject) => {
+    encoderJobs.set(id, { resolve, reject });
+    encoder.postMessage({ id, type, ...payload }, transfer);
+  });
 }
 
 // --- Environment (main thread view; the worker confirms its own) ---
@@ -41,14 +98,11 @@ async function showEnv() {
     $('env-webgpu').textContent = 'non disponible dans ce navigateur';
   } else {
     const adapter = await navigator.gpu.requestAdapter().catch(() => null);
+    gpuLikely = Boolean(adapter);
     $('env-webgpu').textContent = adapter ? 'disponible' : 'API présente, aucun adaptateur GPU';
   }
   $('env-threads').textContent = '1 (plus avec ?threads=N)';
-
-  const cached = await isModelCached();
-  $('model-status').textContent = cached
-    ? 'Modèle déjà en cache : le chargement sera rapide.'
-    : `Le modèle (${(MODEL.sizeBytes / 1e6).toFixed(0)} Mo) sera téléchargé une seule fois.`;
+  if (!gpuLikely) setPill(false);
   await showCacheStatus();
 }
 
@@ -60,15 +114,22 @@ async function showCacheStatus() {
   const est = await navigator.storage?.estimate?.().catch(() => null);
   const persisted = await navigator.storage?.persisted?.().catch(() => false);
   const parts = [
-    cached ? `Modèle en cache (${(MODEL.sizeBytes / 1e6).toFixed(0)} Mo).` : 'Modèle absent du cache.',
+    cached ? `Modèle en cache (${fmtMb(MODEL.sizeBytes)}).` : 'Modèle absent du cache.',
   ];
-  if (est?.usage != null) parts.push(`Espace utilisé par Chimère : ${(est.usage / 1e6).toFixed(0)} Mo.`);
+  if (est?.usage != null) parts.push(`Espace utilisé par Chimère (modèle et bibliothèque) : ${fmtMb(est.usage)}.`);
   parts.push(persisted ? 'Stockage persistant accordé.' : 'Stockage non persistant : le navigateur peut le vider.');
   $('cache-status').textContent = parts.join(' ');
   $('clear-cache').disabled = !cached;
 }
 
-// --- Worker ---
+function setPill(gpu) {
+  const pill = $('backend-pill');
+  pill.textContent = gpu ? 'WebGPU' : 'WASM · mode lent';
+  pill.className = `pill ${gpu ? 'fast' : 'slow'}`;
+  pill.title = gpu ? '' : 'Sans WebGPU, la séparation prend plusieurs fois la durée du morceau.';
+}
+
+// --- Separation worker ---
 let watchdog = null;
 const WATCHDOG_MS = 45000;
 
@@ -76,7 +137,10 @@ function startWorker(threadsOverride) {
   clearTimeout(watchdog);
   worker?.terminate();
   ready = false;
-  updateRunButton();
+  backend = null;
+  updateButtons();
+  // Ask the browser not to evict the model and the library under storage pressure.
+  navigator.storage?.persist?.().then((granted) => log(`Stockage persistant : ${granted ? 'accordé' : 'refusé'}.`));
   worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module', name: 'chimere-separator' });
   worker.addEventListener('message', onWorkerMessage);
   worker.addEventListener('error', (e) => log(`Erreur du worker : ${e.message}`));
@@ -84,6 +148,23 @@ function startWorker(threadsOverride) {
   const threads = threadsOverride ?? (Number(new URLSearchParams(location.search).get('threads')) || 1);
   const cpuNodes = new URLSearchParams(location.search).get('cpunodes') !== '0';
   worker.postMessage({ type: 'init', forceWasm: $('force-wasm').checked, threads, cpuNodes });
+  $('model-status').textContent = 'Chargement du modèle…';
+}
+
+/** Resolves once the model session is ready (starting the worker if needed). */
+function whenReady() {
+  if (ready) return Promise.resolve();
+  if (!worker) startWorker();
+  return new Promise((resolve, reject) => readyWaiters.push({ resolve, reject }));
+}
+
+function stopWorker() {
+  clearTimeout(watchdog);
+  worker?.terminate();
+  worker = null;
+  ready = false;
+  for (const w of readyWaiters) w.reject(new Error('annulé'));
+  readyWaiters = [];
 }
 
 function onWorkerMessage({ data: msg }) {
@@ -93,11 +174,11 @@ function onWorkerMessage({ data: msg }) {
       break;
     case 'download': {
       const p = $('dl');
-      p.hidden = false;
+      p.hidden = msg.cached || msg.loaded >= msg.total;
       p.max = msg.total;
       p.value = msg.loaded;
       if (!msg.cached) {
-        $('model-status').textContent = `Téléchargement : ${(msg.loaded / 1e6).toFixed(0)} / ${(msg.total / 1e6).toFixed(0)} Mo`;
+        $('model-status').textContent = `Téléchargement du modèle : ${fmtMb(msg.loaded)} / ${fmtMb(msg.total)} (une seule fois)`;
       }
       break;
     }
@@ -115,112 +196,435 @@ function onWorkerMessage({ data: msg }) {
       }
       break;
     case 'backend': {
-      const gpu = msg.backend === 'webgpu';
+      backend = msg.backend;
+      const gpu = backend === 'webgpu';
       $('env-backend').textContent = gpu ? 'WebGPU' : `WASM, ${msg.threads} thread(s) — mode lent`;
-      const pill = $('backend-pill');
-      pill.textContent = gpu ? 'WebGPU' : 'WASM · mode lent';
-      pill.className = `pill ${gpu ? 'fast' : 'slow'}`;
-      pill.title = gpu ? '' : 'Sans WebGPU, la séparation prend plusieurs fois la durée du morceau.';
+      setPill(gpu);
+      showFileInfo();
       break;
     }
     case 'ready':
       clearTimeout(watchdog);
       ready = true;
+      $('dl').hidden = true;
       $('model-status').textContent = `Modèle prêt (${fmtMs(msg.loadMs)}).`;
-      $('load').textContent = 'Recharger le modèle';
-      $('load').disabled = false;
-      updateRunButton();
+      for (const w of readyWaiters) w.resolve();
+      readyWaiters = [];
+      updateButtons();
       showCacheStatus();
       break;
     case 'progress':
-      $('sep').max = msg.total;
-      $('sep').value = msg.done;
-      $('sep-status').textContent = `Fenêtre ${msg.done} / ${msg.total}`;
+      onProgress(msg);
       break;
     case 'result':
-      onResult(msg);
+      onResult(msg).catch((e) => {
+        log(`Erreur après la séparation : ${e.message}`);
+        $('sep-status').textContent = `Erreur : ${e.message}`;
+      });
       break;
     case 'fallback':
       $('sep-status').textContent =
         'WebGPU donne un résultat faux sur ce navigateur : nouvelle séparation en WASM, plus lente…';
+      sepStart = performance.now();
       break;
     case 'compare':
       onCompare(msg);
       break;
     case 'error':
       log(`Erreur : ${msg.text}`);
+      if (!ready) {
+        for (const w of readyWaiters) w.reject(new Error(msg.text));
+        readyWaiters = [];
+        $('model-status').textContent = `Erreur : ${msg.text}`;
+      }
       $('sep-status').textContent = `Erreur : ${msg.text}`;
-      $('load').disabled = false;
       $('compare-status').textContent = '';
-      updateRunButton();
+      endSeparationUi();
       break;
   }
 }
 
-// --- Results ---
-
-function onResult({ stems, backend, ms }) {
-  $('run').disabled = false;
-  $('sep-status').textContent = 'Séparation terminée.';
-  $('results').hidden = false;
-
-  const ratio = ms / 1000 / extractDur;
-  $('stats').innerHTML = '';
-  const rows = [
-    ['Morceau', fileName],
-    ['Extrait', `${extractDur.toFixed(1)} s`],
-    ['Backend', backend === 'webgpu' ? 'WebGPU' : 'WASM'],
-    ['Temps de calcul', fmtMs(ms)],
-    ['Rapport au temps réel', `×${ratio.toFixed(2)} (${ratio < 1 ? 'plus rapide' : 'plus lent'} que la lecture)`],
-    ['Estimation pour 4 min', fmtMs(ratio * 240 * 1000)],
-  ];
-  for (const [k, v] of rows) {
-    const dt = document.createElement('dt');
-    dt.textContent = k;
-    const dd = document.createElement('dd');
-    dd.textContent = v;
-    $('stats').append(dt, dd);
+// --- File input ---
+async function loadFile(file) {
+  if (!file) return;
+  $('drop-text').textContent = `Décodage de « ${file.name} »…`;
+  $('file-info').textContent = '';
+  current = null;
+  updateButtons();
+  try {
+    const { audio, bytes } = await decodeFile(file);
+    const id = await songId(bytes);
+    current = { name: file.name.replace(/\.[^.]+$/, ''), audio, id };
+    $('drop-text').textContent = file.name;
+    const known = await getSong(id).catch(() => null);
+    if (known) {
+      $('file-info').textContent = 'Déjà séparé : ouverture depuis la bibliothèque, sans recalcul.';
+      await openSong(known);
+    } else {
+      showFileInfo();
+      // Warm the model up while the user reads the estimate.
+      if (!worker) startWorker();
+    }
+  } catch (e) {
+    current = null;
+    $('drop-text').textContent = `Impossible de décoder ce fichier (${e.message || e}).`;
   }
-  log(`Séparation : ${fmtMs(ms)} en ${backend}, ×${ratio.toFixed(2)} temps réel.`);
+  updateButtons();
+}
 
-  const original = extract(decoded, Number($('start').value), extractDur);
-  // Exposed for debugging from the console.
-  window.chimereLast = { stems, original };
-  excerptId++;
-  const tracks = [
-    ['vocals', STEM_LABELS.vocals, stems.vocals, '--stem-vocals'],
-    ['original', 'Original', [original.left, original.right], '--muted'],
-    ['instrumental', 'Instrumental', mix([stems.drums, stems.bass, stems.other]), '--accent'],
-    ['drums', STEM_LABELS.drums, stems.drums, '--stem-drums'],
-    ['bass', STEM_LABELS.bass, stems.bass, '--stem-bass'],
-    ['other', STEM_LABELS.other, stems.other, '--stem-other'],
+function showFileInfo() {
+  if (!current) return;
+  const { audio } = current;
+  const b = backend ?? (gpuLikely ? 'webgpu' : 'wasm');
+  const eta = audio.duration * speedRatio(b);
+  const parts = [
+    `${fmtTime(audio.duration)}, ${audio.numberOfChannels === 1 ? 'mono' : 'stéréo'}, rééchantillonné à 44,1 kHz.`,
+    b === 'webgpu'
+      ? `Séparation estimée : environ ${fmtDuration(eta)} (WebGPU).`
+      : `Mode lent (WASM, sans WebGPU) : environ ${fmtDuration(eta)}. Chrome ou Edge récents avec WebGPU vont bien plus vite.`,
   ];
-  const box = $('players');
+  if (audio.duration > LONG_SONG_SEC) {
+    parts.push(`Morceau long : le calcul demande environ ${fmtMb(audio.duration * SAMPLE_RATE * 2 * 4 * 6)} de mémoire.`);
+  }
+  $('file-info').textContent = parts.join(' ');
+}
+
+$('file').addEventListener('change', (e) => loadFile(e.target.files[0]));
+const drop = $('drop');
+drop.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  drop.classList.add('over');
+});
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', (e) => {
+  e.preventDefault();
+  drop.classList.remove('over');
+  loadFile(e.dataTransfer.files[0]);
+});
+
+// --- Separation ---
+let separating = false;
+
+function updateButtons() {
+  $('run').disabled = !current || separating;
+  $('compare').disabled = !(ready && current && backend === 'webgpu' && !separating);
+}
+
+$('run').addEventListener('click', async () => {
+  if (!current) return;
+  separating = true;
+  updateButtons();
+  $('cancel').hidden = false;
+  $('sep').hidden = false;
+  $('sep').value = 0;
+  $('sep-status').textContent = ready ? 'Séparation…' : 'Chargement du modèle…';
+  try {
+    await whenReady();
+  } catch (e) {
+    endSeparationUi();
+    return;
+  }
+  sepSource = current;
+  const [l, r] = channels(current.audio);
+  const left = l.slice();
+  const right = r.slice();
+  sepStart = performance.now();
+  $('sep-status').textContent = 'Séparation…';
+  worker.postMessage({ type: 'separate', left, right }, [left.buffer, right.buffer]);
+});
+
+$('cancel').addEventListener('click', () => {
+  stopWorker();
+  log('Séparation annulée.');
+  $('sep-status').textContent = 'Séparation annulée.';
+  $('model-status').textContent = '';
+  endSeparationUi();
+});
+
+function endSeparationUi() {
+  separating = false;
+  $('cancel').hidden = true;
+  $('sep').hidden = true;
+  updateButtons();
+}
+
+function onProgress({ done, total }) {
+  $('sep').max = total;
+  $('sep').value = done;
+  const elapsed = (performance.now() - sepStart) / 1000;
+  const left = done > 0 ? (elapsed / done) * (total - done) : NaN;
+  $('sep-status').textContent =
+    `Fenêtre ${done} / ${total}` + (done > 0 && done < total ? ` · reste environ ${fmtDuration(left)}` : '');
+}
+
+async function onResult({ stems, backend: used, ms }) {
+  endSeparationUi();
+  const src = sepSource;
+  const ratio = ms / 1000 / src.audio.duration;
+  rememberRatio(used, ratio);
+  log(`Séparation : ${fmtMs(ms)} en ${used}, ×${ratio.toFixed(2)} temps réel.`);
+  $('sep-status').textContent = `Séparation terminée en ${fmtDuration(ms / 1000)} (${used === 'webgpu' ? 'WebGPU' : 'WASM'}).`;
+
+  const buffers = { original: src.audio };
+  for (const id of STEM_IDS) buffers[id] = player.makeBuffer(stems[id][0], stems[id][1]);
+  const meta = {
+    id: src.id,
+    name: src.name,
+    duration: src.audio.duration,
+    createdAt: Date.now(),
+    backend: used,
+    ms,
+    tracks: ['original', ...STEM_IDS],
+  };
+  showSong(meta, buffers);
+  player.play();
+
+  // Store in the library as int16 (encoded in a worker; stems are transferred).
+  $('export-status').textContent = 'Enregistrement dans la bibliothèque…';
+  const [ol, or] = channels(src.audio);
+  const tracks = { original: [ol.slice(), or.slice()] };
+  const transfer = [tracks.original[0].buffer, tracks.original[1].buffer];
+  for (const id of STEM_IDS) {
+    tracks[id] = stems[id];
+    transfer.push(stems[id][0].buffer, stems[id][1].buffer);
+  }
+  try {
+    const pcm = await encode('int16', { tracks }, transfer);
+    meta.bytes = Object.values(pcm).reduce((s, a) => s + a.byteLength, 0);
+    await saveSong(meta, pcm);
+    $('export-status').textContent = `Enregistré dans la bibliothèque (${fmtMb(meta.bytes)}).`;
+    renderLibrary();
+    showCacheStatus();
+  } catch (e) {
+    log(`Bibliothèque : échec de l'enregistrement (${e.message}).`);
+    $('export-status').textContent = `Pas enregistré dans la bibliothèque : ${e.message}`;
+  }
+}
+
+// --- Track view ---
+function showSong(meta, buffers) {
+  const state = {};
+  for (const t of TRACKS) state[t.id] = { volume: 1, muted: Boolean(t.muted), solo: false };
+  const peaks = {};
+  for (const t of TRACKS) {
+    const [l, r] = channels(buffers[t.id]);
+    peaks[t.id] = computePeaks(l, r, 2000);
+  }
+  song = { meta, buffers, state, peaks };
+  loadSongIntoPlayer();
+  $('song').hidden = false;
+  $('song-title').textContent = meta.name;
+  $('song-meta').textContent = `${fmtTime(meta.duration)} · séparé en ${fmtDuration(meta.ms / 1000)} (${meta.backend === 'webgpu' ? 'WebGPU' : 'WASM'})`;
+  $('export-status').textContent = '';
+  renderTracks();
+}
+
+function loadSongIntoPlayer() {
+  player.load(
+    TRACKS.map((t) => ({ ...t, buffer: song.buffers[t.id], ...song.state[t.id] })),
+    { kind: 'song', id: song.meta.id, title: song.meta.name, sub: 'Pistes séparées', color: '--accent' },
+  );
+}
+
+/** Make sure the player holds the current song (the diagnostic may have replaced it). */
+function ensureSong() {
+  if (song && player.meta?.id !== song.meta.id) loadSongIntoPlayer();
+}
+
+function renderTracks() {
+  const box = $('tracks');
   box.innerHTML = '';
-  for (const [id, label, [l, r], color] of tracks) {
-    const b = document.createElement('button');
-    b.textContent = label;
-    b.dataset.track = id;
-    b.style.setProperty('--c', `var(${color})`);
-    b.addEventListener('click', () => {
-      const same = player.meta?.excerpt === excerptId;
-      player.load(l, r, { id, label, color, excerpt: excerptId, sub: fileName }, { keepPosition: same });
-      player.play();
-    });
-    box.append(b);
+  for (const t of TRACKS) {
+    const row = document.createElement('div');
+    row.className = 'track';
+    row.dataset.id = t.id;
+    row.style.setProperty('--c', `var(${t.color})`);
+    row.innerHTML = `
+      <div class="track-head">
+        <span class="chip"></span>
+        <strong class="track-name"></strong>
+        <button class="tbtn" data-act="solo" title="Solo : n'écouter que cette piste" aria-pressed="false">S</button>
+        <button class="tbtn" data-act="mute" title="Muet" aria-pressed="false">M</button>
+        <input class="tvol" type="range" min="0" max="1.5" step="0.01" value="1" aria-label="Volume" />
+        <button class="tbtn" data-act="export" title="Exporter en WAV" aria-label="Exporter en WAV">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>
+        </button>
+      </div>
+      <div class="wave-wrap"><canvas class="wave"></canvas><div class="ph"></div></div>`;
+    row.querySelector('.track-name').textContent = t.label;
+    row.querySelector('.tvol').value = String(song.state[t.id].volume);
+    row.querySelector('.tvol').setAttribute('aria-label', `Volume ${t.label}`);
+    box.append(row);
   }
-  // Step 1 goal: play the vocals alone right away.
-  box.firstElementChild.click();
+  renderTrackState();
+  drawWaves();
+}
+
+function renderTrackState() {
+  if (!song) return;
+  const anySolo = Object.values(song.state).some((s) => s.solo);
+  for (const row of $('tracks').children) {
+    const st = song.state[row.dataset.id];
+    const audible = anySolo ? st.solo : !st.muted;
+    row.classList.toggle('off', !audible);
+    row.querySelector('[data-act="solo"]').setAttribute('aria-pressed', String(st.solo));
+    row.querySelector('[data-act="mute"]').setAttribute('aria-pressed', String(st.muted));
+  }
+}
+
+function setTrackState(id, changes) {
+  ensureSong();
+  Object.assign(song.state[id], changes);
+  player.setTrack(id, changes);
+  renderTrackState();
+}
+
+$('tracks').addEventListener('click', (e) => {
+  const row = e.target.closest('.track');
+  if (!row || !song) return;
+  const id = row.dataset.id;
+  const act = e.target.closest('[data-act]')?.dataset.act;
+  if (act === 'solo') setTrackState(id, { solo: !song.state[id].solo });
+  else if (act === 'mute') setTrackState(id, { muted: !song.state[id].muted });
+  else if (act === 'export') exportTracks([id], TRACKS.find((t) => t.id === id).label);
+  else if (e.target.closest('.wave-wrap')) {
+    ensureSong();
+    const rect = e.target.closest('.wave-wrap').getBoundingClientRect();
+    player.seek(((e.clientX - rect.left) / rect.width) * player.duration);
+  }
+});
+$('tracks').addEventListener('input', (e) => {
+  if (!e.target.classList.contains('tvol')) return;
+  setTrackState(e.target.closest('.track').dataset.id, { volume: Number(e.target.value) });
+});
+
+function drawWaves() {
+  if (!song) return;
+  const dpr = window.devicePixelRatio || 1;
+  for (const row of $('tracks').children) {
+    const canvas = row.querySelector('canvas');
+    const w = Math.max(1, Math.round(canvas.clientWidth * dpr));
+    const h = Math.max(1, Math.round(canvas.clientHeight * dpr));
+    if (canvas.width !== w) canvas.width = w;
+    if (canvas.height !== h) canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = getComputedStyle(row).getPropertyValue('--c').trim() || '#888';
+    const peaks = song.peaks[row.dataset.id];
+    const mid = h / 2;
+    for (let x = 0; x < w; x++) {
+      const a = Math.floor((x * peaks.length) / w);
+      const b = Math.max(a + 1, Math.floor(((x + 1) * peaks.length) / w));
+      let m = 0;
+      for (let i = a; i < b; i++) if (peaks[i] > m) m = peaks[i];
+      const bar = Math.max(1, Math.min(1, m) * mid);
+      ctx.fillRect(x, mid - bar, 1, 2 * bar);
+    }
+  }
+}
+new ResizeObserver(() => drawWaves()).observe($('tracks'));
+
+// --- Export (WAV, encoded in a worker) ---
+async function exportTracks(ids, label) {
+  if (!song) return;
+  const status = $('export-status');
+  status.textContent = `Encodage de « ${label} »…`;
+  try {
+    const signals = ids.map((id) => channels(song.buffers[id]).map((a) => a.slice()));
+    const transfer = signals.flatMap(([l, r]) => [l.buffer, r.buffer]);
+    const wav = await encode('wav', { signals, sampleRate: SAMPLE_RATE }, transfer);
+    const url = URL.createObjectURL(new Blob([wav], { type: 'audio/wav' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${song.meta.name} - ${label}.wav`;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    // Give the download time to start before freeing the blob (not audio timing).
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    status.textContent = `« ${a.download} » exporté (${fmtMb(wav.byteLength)}).`;
+  } catch (e) {
+    status.textContent = `Échec de l'export : ${e.message}`;
+  }
+}
+
+$('export-inst').addEventListener('click', () => exportTracks(['drums', 'bass', 'other'], 'Instrumental'));
+$('export-all').addEventListener('click', async () => {
+  for (const id of STEM_IDS) await exportTracks([id], STEM_LABELS[id]);
+});
+
+// --- Library ---
+async function openSong(meta) {
+  $('export-status').textContent = 'Ouverture depuis la bibliothèque…';
+  const pcm = await loadTracks(meta);
+  const transfer = Object.values(pcm).map((a) => a.buffer);
+  const floats = await encode('float', { tracks: pcm }, transfer);
+  const buffers = {};
+  for (const id of meta.tracks) buffers[id] = player.makeBuffer(floats[id][0], floats[id][1]);
+  showSong(meta, buffers);
+  if (location.hash !== '#/separer') location.hash = '#/separer';
+}
+
+async function renderLibrary() {
+  let songs = [];
+  try {
+    songs = await listSongs();
+  } catch (e) {
+    log(`Bibliothèque illisible : ${e.message}`);
+  }
+  $('library-empty').hidden = songs.length > 0;
+  const list = $('library-list');
+  list.innerHTML = '';
+  for (const meta of songs) {
+    const li = document.createElement('li');
+    li.className = 'song-card';
+    li.innerHTML = `
+      <div class="cover"></div>
+      <div class="song-text">
+        <strong class="song-name"></strong>
+        <span class="muted small tabular song-sub"></span>
+      </div>
+      <button class="primary" data-act="open">Ouvrir</button>
+      <button data-act="delete">Supprimer</button>`;
+    li.querySelector('.song-name').textContent = meta.name;
+    li.querySelector('.song-sub').textContent =
+      `${fmtTime(meta.duration)} · ${new Date(meta.createdAt).toLocaleDateString('fr-FR')} · ${fmtMb(meta.bytes ?? 0)}`;
+    li.querySelector('.cover').style.background = coverGradient(meta.id);
+    li.querySelector('[data-act="open"]').addEventListener('click', () =>
+      openSong(meta).catch((e) => log(`Ouverture impossible : ${e.message}`)),
+    );
+    li.querySelector('[data-act="delete"]').addEventListener('click', async () => {
+      if (!confirm(`Supprimer « ${meta.name} » de la bibliothèque ? Il faudra le séparer à nouveau.`)) return;
+      if (song?.meta.id === meta.id) {
+        player.unload();
+        song = null;
+        $('song').hidden = true;
+      }
+      await deleteSong(meta.id);
+      renderLibrary();
+      showCacheStatus();
+    });
+    list.append(li);
+  }
+}
+
+/** Gradient "cover" derived from the song id, in the stem colours. */
+function coverGradient(id) {
+  const n = parseInt(id.slice(0, 6), 16) || 0;
+  const colors = ['var(--stem-vocals)', 'var(--stem-drums)', 'var(--stem-bass)', 'var(--stem-other)'];
+  const a = colors[n % 4];
+  const b = colors[(n >> 2) % 4 === n % 4 ? (n + 1) % 4 : (n >> 2) % 4];
+  return `linear-gradient(${n % 360}deg, ${a}, ${b})`;
 }
 
 // --- WebGPU / WASM diagnostic ---
 function onCompare({ rows, vocalsGpu, vocalsCpu }) {
-  updateRunButton();
+  updateButtons();
   const pct = (x) => `${(x * 100).toFixed(x < 0.01 ? 2 : 1)} %`;
   const worst = Math.max(...rows.combined.map((r) => r.rel));
   $('compare-status').textContent =
     worst < 0.02
-      ? `Écart maximal ${pct(worst)} : WebGPU calcule comme WASM. Les artefacts viennent d'ailleurs.`
+      ? `Écart maximal ${pct(worst)} : WebGPU calcule comme WASM.`
       : `Écart maximal ${pct(worst)} : WebGPU donne un résultat différent de WASM sur ce navigateur.`;
   const t = $('compare-table');
   t.hidden = false;
@@ -253,9 +657,10 @@ function onCompare({ rows, vocalsGpu, vocalsCpu }) {
     const b = document.createElement('button');
     b.textContent = label;
     b.style.setProperty('--c', 'var(--stem-vocals)');
+    const buffer = player.makeBuffer(l, r);
     b.addEventListener('click', () => {
-      const same = player.meta?.excerpt === 'compare';
-      player.load(l, r, { id, label, color: '--stem-vocals', excerpt: 'compare', sub: 'Diagnostic, 7,8 s' }, { keepPosition: same });
+      const same = player.meta?.kind === 'compare';
+      player.load([{ id, label, color: '--stem-vocals', buffer }], { kind: 'compare', id, title: label, sub: 'Diagnostic, 7,8 s', color: '--stem-vocals' }, { keepPosition: same });
       player.play();
     });
     box.append(b);
@@ -263,35 +668,35 @@ function onCompare({ rows, vocalsGpu, vocalsCpu }) {
 }
 
 $('compare').addEventListener('click', () => {
+  if (!current) return;
   player.pause();
-  const start = Number($('start').value) || 0;
-  const { left, right } = extract(decoded, start, 7.8);
+  const start = Math.max(0, current.audio.duration / 2 - 3.9);
+  const { left, right } = extract(current.audio, start, 7.8);
   $('compare').disabled = true;
   $('compare-status').textContent = 'Comparaison en cours (environ 30 s en WASM)…';
   worker.postMessage({ type: 'compare', left, right }, [left.buffer, right.buffer]);
 });
 
 // --- Bottom player ---
-let excerptId = 0;
 let raf = 0;
 
 function renderPlayer() {
-  const bar = $('player');
-  const has = Boolean(player.buffer);
-  bar.classList.toggle('playing', player.playing);
+  const has = player.tracks.length > 0;
+  $('player').classList.toggle('playing', player.playing);
   $('play').disabled = !has;
   $('play').setAttribute('aria-label', player.playing ? 'Pause' : 'Lecture');
   $('seek').disabled = !has;
   $('seek').max = String(player.duration || 1);
   $('time-dur').textContent = fmtTime(player.duration);
   if (has) {
-    $('now-title').textContent = player.meta.label;
+    $('now-title').textContent = player.meta.title;
     $('now-sub').textContent = player.meta.sub;
     $('now-dot').style.setProperty('--c', `var(${player.meta.color})`);
+  } else {
+    $('now-title').textContent = 'Rien en lecture';
+    $('now-sub').textContent = 'Séparez un morceau pour l\'écouter';
+    $('now-dot').style.removeProperty('--c');
   }
-  $('players').querySelectorAll('button').forEach((b) => {
-    b.classList.toggle('playing', player.playing && player.meta?.excerpt === excerptId && b.dataset.track === player.meta.id);
-  });
   renderPosition();
   cancelAnimationFrame(raf);
   if (player.playing) raf = requestAnimationFrame(tick);
@@ -299,9 +704,17 @@ function renderPlayer() {
 
 let seeking = false;
 function renderPosition() {
-  if (seeking) return;
-  $('seek').value = String(player.position);
-  $('time-pos').textContent = fmtTime(player.position);
+  const pos = player.position;
+  if (!seeking) {
+    $('seek').value = String(pos);
+    $('time-pos').textContent = fmtTime(pos);
+  }
+  const onSong = song && player.meta?.id === song.meta.id;
+  const frac = onSong && player.duration ? pos / player.duration : 0;
+  for (const ph of $('tracks').querySelectorAll('.ph')) {
+    ph.style.left = `${frac * 100}%`;
+    ph.hidden = !onSong;
+  }
 }
 
 // Display refresh only; playback itself is scheduled on the AudioContext.
@@ -324,73 +737,18 @@ $('volume').addEventListener('input', (e) => {
   player.volume = Number(e.target.value);
 });
 document.addEventListener('keydown', (e) => {
-  if (e.code !== 'Space' || !player.buffer) return;
+  if (e.code !== 'Space' || !player.tracks.length) return;
   if (e.target.closest('input, button, textarea, select, [contenteditable]')) return;
   e.preventDefault();
   player.toggle();
 });
 
-// --- File input ---
-async function loadFile(file) {
-  if (!file) return;
-  player.stop();
-  $('drop-text').textContent = `Décodage de « ${file.name} »…`;
-  try {
-    decoded = await decodeFile(file);
-    fileName = file.name;
-    $('drop-text').textContent = `${file.name} — ${decoded.duration.toFixed(1)} s, ${decoded.numberOfChannels} canal(aux), rééchantillonné à 44,1 kHz`;
-    if (Number($('start').value) >= decoded.duration) $('start').value = '0';
-  } catch (e) {
-    decoded = null;
-    $('drop-text').textContent = `Impossible de décoder ce fichier (${e.message || e}).`;
-  }
-  updateRunButton();
-}
-
-$('file').addEventListener('change', (e) => loadFile(e.target.files[0]));
-const drop = $('drop');
-drop.addEventListener('dragover', (e) => {
-  e.preventDefault();
-  drop.classList.add('over');
-});
-drop.addEventListener('dragleave', () => drop.classList.remove('over'));
-drop.addEventListener('drop', (e) => {
-  e.preventDefault();
-  drop.classList.remove('over');
-  loadFile(e.dataTransfer.files[0]);
-});
-
-// --- Buttons ---
-$('load').addEventListener('click', () => {
-  $('load').disabled = true;
-  // Ask the browser not to evict the cached model under storage pressure.
-  navigator.storage?.persist?.().then((granted) => log(`Stockage persistant : ${granted ? 'accordé' : 'refusé'}.`));
-  startWorker();
-});
-
+// --- Settings ---
 $('force-wasm').addEventListener('change', () => {
-  if (worker) {
+  if (worker && !separating) {
     log('Changement de backend : rechargement de la session.');
-    $('load').disabled = true;
     startWorker();
   }
-});
-
-$('run').addEventListener('click', () => {
-  player.stop();
-  const start = Number($('start').value) || 0;
-  const dur = Number($('dur').value) || 30;
-  const { left, right } = extract(decoded, start, dur);
-  if (left.length === 0) {
-    $('sep-status').textContent = "L'extrait est vide : vérifiez le début.";
-    return;
-  }
-  extractDur = left.length / decoded.sampleRate;
-  $('run').disabled = true;
-  $('sep').hidden = false;
-  $('sep').value = 0;
-  $('sep-status').textContent = 'Séparation en cours…';
-  worker.postMessage({ type: 'separate', left, right }, [left.buffer, right.buffer]);
 });
 
 $('clear-cache').addEventListener('click', async () => {
@@ -411,7 +769,10 @@ startRouter((name) => {
   });
   document.querySelector('.content').scrollTo(0, 0);
   document.title = `${document.querySelector(`.nav a[data-route="${name}"] span`).textContent} · Chimère`;
+  if (name === 'bibliotheque') renderLibrary();
+  if (name === 'separer') requestAnimationFrame(drawWaves);
 });
 
 log(`Modèle : ${MODEL.repo}/${MODEL.file} @ ${MODEL.revision.slice(0, 8)}`);
 showEnv();
+renderLibrary();
