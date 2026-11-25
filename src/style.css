@@ -190,6 +190,24 @@ input[type='range'] { accent-color: var(--accent); }
 .check { display: flex; gap: 8px; align-items: center; color: var(--muted); }
 
 .tabular { font-variant-numeric: tabular-nums; }
+
+/* --- Analysis row: tempo and key --- */
+.analysis { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; margin: 4px 0 12px; }
+.field { display: flex; align-items: center; gap: 6px; }
+.num, .analysis select {
+  background: var(--surface-3);
+  color: var(--text);
+  border: 0;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+.num { width: 76px; }
+.tbtn.wide { width: auto; padding: 0 8px; }
+.camelot { font-variant-numeric: tabular-nums; color: var(--text); }
+button.link { background: none; padding: 0; color: var(--muted); text-decoration: underline; border-radius: 0; }
+button.link:hover { color: var(--text); filter: none; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 
 /* --- Track view: header (name, S, M, volume, export) | waveform --- */

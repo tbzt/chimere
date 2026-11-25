@@ -35,6 +35,9 @@ The spec is `docs/fiche-projet.md` (French); read it before any feature work.
 
 ## Known runtime pitfalls
 
+- Create workers inline as `new Worker(new URL('./x.js', import.meta.url), …)`: Vite only bundles
+  them in that exact form (passing the URL through a variable works in dev, breaks the build).
+
 - Multithreaded WASM hangs at session creation when ORT runs inside a Worker (Chromium 156,
   also with `ort.env.wasm.proxy`). The worker uses 1 thread by default; `?threads=N` opts in,
   with a 45 s watchdog in `main.js` that restarts in 1 thread. On the main thread 8 threads are
@@ -58,6 +61,9 @@ The spec is `docs/fiche-projet.md` (French); read it before any feature work.
 - `src/audio.js` — decoding, resampling, multitrack `Player` (all sources started on one
   AudioContext time; per-track gain for volume/mute/solo; master gain)
 - `src/wav.js` — pure PCM helpers (int16, WAV, mix, peaks); `src/encoder.worker.js` runs them
+- `src/analysis.js` — pure tempo (onset flux + comb autocorrelation, on drums) and key (chroma +
+  Krumhansl profiles, on bass + other) estimation, Camelot codes; run by `src/analysis.worker.js`.
+  Results live in `meta.analysis` ({ auto, bpm, tonic, mode }; manual edits keep `auto`)
 - `src/library.js` — IndexedDB library (idb-keyval): `meta:<id>` + `pcm:<id>:<track>` int16;
   id = SHA-256 of the file bytes + model revision
 - `src/config.js` — model URL, constants
@@ -70,7 +76,7 @@ The spec is `docs/fiche-projet.md` (French); read it before any feature work.
 - `npm install`
 - `npm run dev` — dev server with COOP/COEP headers set by Vite
 - `npm run build` / `npm run preview`
-- `npm test` — Node unit tests (`src/separate.js`, `src/router.js`, `src/wav.js`)
+- `npm test` — Node unit tests (`src/separate.js`, `src/router.js`, `src/wav.js`, `src/analysis.js`)
 - npm/node live in `~/.local/bin` (not on the default PATH of tool shells)
 
 ## Conventions

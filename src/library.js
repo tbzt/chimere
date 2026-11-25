@@ -30,6 +30,9 @@ export async function saveSong(meta, pcm) {
   await set(`meta:${meta.id}`, meta, store);
 }
 
+/** Rewrite the metadata only (e.g. after analysis or a manual correction). */
+export const updateMeta = (meta) => set(`meta:${meta.id}`, meta, store);
+
 /** @returns {Promise<Record<string, Int16Array>>} */
 export async function loadTracks(meta) {
   const values = await getMany(meta.tracks.map((n) => `pcm:${meta.id}:${n}`), store);

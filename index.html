@@ -91,6 +91,23 @@
               <h2 id="song-title">—</h2>
               <span class="muted small tabular" id="song-meta"></span>
             </div>
+            <div class="analysis" id="analysis">
+              <div class="field">
+                <label for="bpm" class="muted small">Tempo</label>
+                <input id="bpm" class="num" type="number" min="40" max="250" step="0.1" />
+                <span class="muted small">BPM</span>
+                <button class="tbtn wide" id="bpm-half" title="Diviser le tempo par 2">÷2</button>
+                <button class="tbtn wide" id="bpm-double" title="Multiplier le tempo par 2">×2</button>
+                <button class="tbtn wide" id="tap" title="Taper le tempo en rythme (4 frappes ou plus)">Tap</button>
+              </div>
+              <div class="field">
+                <label for="key" class="muted small">Tonalité</label>
+                <select id="key"></select>
+                <span class="pill camelot" id="camelot" title="Notation Camelot : même nombre, ±1 ou même nombre A/B = tonalités compatibles">—</span>
+              </div>
+              <button class="link small" id="analysis-reset" hidden>Revenir aux valeurs détectées</button>
+              <span class="muted small" id="analysis-status"></span>
+            </div>
             <div class="tracks" id="tracks"></div>
             <div class="actions">
               <button id="export-inst">Exporter l'instrumental</button>

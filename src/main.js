@@ -3,7 +3,8 @@ import './style.css';
 import { MODEL, MODEL_CACHE, SAMPLE_RATE, STEM_LABELS } from './config.js';
 import { decodeFile, extract, channels, Player } from './audio.js';
 import { computePeaks } from './wav.js';
-import { songId, getSong, saveSong, loadTracks, listSongs, deleteSong } from './library.js';
+import { songId, getSong, saveSong, updateMeta, loadTracks, listSongs, deleteSong } from './library.js';
+import { keyName, keyNameFr, camelot } from './analysis.js';
 import { startRouter } from './router.js';
 
 const $ = (id) => document.getElementById(id);
@@ -70,24 +71,34 @@ function rememberRatio(b, ratio) {
   }
 }
 
-// --- Encoder worker (int16, WAV) ---
-const encoder = new Worker(new URL('./encoder.worker.js', import.meta.url), { type: 'module', name: 'chimere-encoder' });
-const encoderJobs = new Map();
-let encoderSeq = 0;
-encoder.addEventListener('message', ({ data }) => {
-  const job = encoderJobs.get(data.id);
-  if (!job) return;
-  encoderJobs.delete(data.id);
-  if (data.error) job.reject(new Error(data.error));
-  else job.resolve(data.result);
-});
-function encode(type, payload, transfer = []) {
-  const id = ++encoderSeq;
-  return new Promise((resolve, reject) => {
-    encoderJobs.set(id, { resolve, reject });
-    encoder.postMessage({ id, type, ...payload }, transfer);
+// --- Helper workers: encoding (int16, WAV) and analysis (tempo, key) ---
+/** Request/response wrapper around a worker that replies { id, result | error }. */
+// Workers are created inline (new Worker(new URL(…))) so Vite bundles them.
+function jobWorker(w) {
+  const jobs = new Map();
+  let seq = 0;
+  w.addEventListener('message', ({ data }) => {
+    const job = jobs.get(data.id);
+    if (!job) return;
+    jobs.delete(data.id);
+    if (data.error) job.reject(new Error(data.error));
+    else job.resolve(data.result);
   });
+  return (payload, transfer = []) => {
+    const id = ++seq;
+    return new Promise((resolve, reject) => {
+      jobs.set(id, { resolve, reject });
+      w.postMessage({ id, ...payload }, transfer);
+    });
+  };
 }
+const encoderJob = jobWorker(
+  new Worker(new URL('./encoder.worker.js', import.meta.url), { type: 'module', name: 'chimere-encoder' }),
+);
+const encode = (type, payload, transfer) => encoderJob({ type, ...payload }, transfer);
+const analysisJob = jobWorker(
+  new Worker(new URL('./analysis.worker.js', import.meta.url), { type: 'module', name: 'chimere-analysis' }),
+);
 
 // --- Environment (main thread view; the worker confirms its own) ---
 async function showEnv() {
@@ -376,7 +387,10 @@ async function onResult({ stems, backend: used, ms }) {
     ms,
     tracks: ['original', ...STEM_IDS],
   };
-  showSong(meta, buffers);
+  let saved;
+  song = null;
+  const savedPromise = new Promise((resolve) => (saved = resolve));
+  showSong(meta, buffers, savedPromise);
   player.play();
 
   // Store in the library as int16 (encoded in a worker; stems are transferred).
@@ -392,17 +406,20 @@ async function onResult({ stems, backend: used, ms }) {
     const pcm = await encode('int16', { tracks }, transfer);
     meta.bytes = Object.values(pcm).reduce((s, a) => s + a.byteLength, 0);
     await saveSong(meta, pcm);
+    saved(true);
     $('export-status').textContent = `Enregistré dans la bibliothèque (${fmtMb(meta.bytes)}).`;
     renderLibrary();
     showCacheStatus();
   } catch (e) {
+    saved(false);
     log(`Bibliothèque : échec de l'enregistrement (${e.message}).`);
     $('export-status').textContent = `Pas enregistré dans la bibliothèque : ${e.message}`;
   }
 }
 
 // --- Track view ---
-function showSong(meta, buffers) {
+/** @param {Promise<boolean>} saved resolves true once the song is in the library */
+function showSong(meta, buffers, saved = Promise.resolve(true)) {
   const state = {};
   for (const t of TRACKS) state[t.id] = { volume: 1, muted: Boolean(t.muted), solo: false };
   const peaks = {};
@@ -410,14 +427,131 @@ function showSong(meta, buffers) {
     const [l, r] = channels(buffers[t.id]);
     peaks[t.id] = computePeaks(l, r, 2000);
   }
-  song = { meta, buffers, state, peaks };
+  song = { meta, buffers, state, peaks, saved };
   loadSongIntoPlayer();
   $('song').hidden = false;
   $('song-title').textContent = meta.name;
   $('song-meta').textContent = `${fmtTime(meta.duration)} · séparé en ${fmtDuration(meta.ms / 1000)} (${meta.backend === 'webgpu' ? 'WebGPU' : 'WASM'})`;
   $('export-status').textContent = '';
   renderTracks();
+  renderAnalysis();
+  if (!meta.analysis) runAnalysis(song);
 }
+
+// --- Analysis: tempo and key ---
+const KEY_OPTIONS = [];
+for (const mode of ['major', 'minor']) {
+  for (let tonic = 0; tonic < 12; tonic++) KEY_OPTIONS.push({ tonic, mode });
+}
+// Sorted along the Camelot wheel (1A, 1B, 2A…), the order DJs read it in.
+KEY_OPTIONS.sort((a, b) => {
+  const ca = camelot(a.tonic, a.mode);
+  const cb = camelot(b.tonic, b.mode);
+  return parseInt(ca, 10) - parseInt(cb, 10) || ca.localeCompare(cb);
+});
+for (const k of KEY_OPTIONS) {
+  const o = document.createElement('option');
+  o.value = `${k.tonic}:${k.mode}`;
+  o.textContent = `${camelot(k.tonic, k.mode)} · ${keyNameFr(k.tonic, k.mode)} (${keyName(k.tonic, k.mode)})`;
+  $('key').append(o);
+}
+
+async function runAnalysis(target) {
+  $('analysis-status').textContent = 'Analyse du tempo et de la tonalité…';
+  try {
+    const copy = (id) => channels(target.buffers[id]).map((a) => a.slice());
+    const rhythm = [copy('drums')];
+    const harmonic = [copy('bass'), copy('other')];
+    const transfer = [...rhythm, ...harmonic].flat().map((a) => a.buffer);
+    const auto = await analysisJob({ rhythm, harmonic }, transfer);
+    log(
+      `Analyse : ${auto.bpm} BPM (confiance ${auto.bpmConfidence.toFixed(2)}), ` +
+        `${keyName(auto.tonic, auto.mode)} (score ${auto.keyScore.toFixed(2)}, écart ${auto.keyMargin.toFixed(3)}), ${fmtMs(auto.ms)}.`,
+    );
+    target.meta.analysis = { auto, bpm: auto.bpm, tonic: auto.tonic, mode: auto.mode };
+    if (song === target) {
+      $('analysis-status').textContent = '';
+      renderAnalysis();
+    }
+    await persistMeta(target);
+  } catch (e) {
+    log(`Analyse impossible : ${e.message}`);
+    if (song === target) $('analysis-status').textContent = `Analyse impossible : ${e.message}`;
+  }
+}
+
+async function persistMeta(target) {
+  if (await target.saved) {
+    await updateMeta(target.meta).catch((e) => log(`Bibliothèque : ${e.message}`));
+    renderLibrary();
+  }
+}
+
+function renderAnalysis() {
+  const a = song?.meta.analysis;
+  const disabled = !a;
+  for (const id of ['bpm', 'bpm-half', 'bpm-double', 'tap', 'key']) $(id).disabled = disabled;
+  if (!a) {
+    $('bpm').value = '';
+    $('camelot').textContent = '—';
+    $('analysis-reset').hidden = true;
+    return;
+  }
+  if (document.activeElement !== $('bpm')) $('bpm').value = String(a.bpm);
+  $('key').value = `${a.tonic}:${a.mode}`;
+  $('camelot').textContent = camelot(a.tonic, a.mode);
+  const corrected = a.bpm !== a.auto.bpm || a.tonic !== a.auto.tonic || a.mode !== a.auto.mode;
+  $('analysis-reset').hidden = !corrected;
+  const doubts = [];
+  if (!corrected && a.auto.bpmConfidence < 0.25) doubts.push('tempo incertain');
+  if (!corrected && a.auto.keyMargin < 0.02) doubts.push('tonalité incertaine');
+  $('analysis-status').textContent = corrected
+    ? 'Valeurs corrigées à la main.'
+    : doubts.length
+      ? `Détection : ${doubts.join(', ')}, à vérifier à l'oreille.`
+      : 'Valeurs détectées automatiquement.';
+}
+
+function setAnalysis(changes) {
+  if (!song?.meta.analysis) return;
+  Object.assign(song.meta.analysis, changes);
+  renderAnalysis();
+  persistMeta(song);
+}
+
+const clampBpm = (v) => Math.round(Math.min(250, Math.max(40, v)) * 10) / 10;
+$('bpm').addEventListener('change', (e) => {
+  const v = Number(e.target.value);
+  if (v > 0) setAnalysis({ bpm: clampBpm(v) });
+  else renderAnalysis();
+});
+$('bpm-half').addEventListener('click', () => setAnalysis({ bpm: clampBpm(song.meta.analysis.bpm / 2) }));
+$('bpm-double').addEventListener('click', () => setAnalysis({ bpm: clampBpm(song.meta.analysis.bpm * 2) }));
+$('key').addEventListener('change', (e) => {
+  const [tonic, mode] = e.target.value.split(':');
+  setAnalysis({ tonic: Number(tonic), mode });
+});
+$('analysis-reset').addEventListener('click', () => {
+  const { auto } = song.meta.analysis;
+  setAnalysis({ bpm: auto.bpm, tonic: auto.tonic, mode: auto.mode });
+});
+
+// Tap tempo: average of the last intervals between clicks (UI input timing,
+// not audio scheduling). A pause of more than 2 s starts a new series.
+let taps = [];
+$('tap').addEventListener('pointerdown', (e) => {
+  const t = e.timeStamp;
+  if (taps.length && t - taps[taps.length - 1] > 2000) taps = [];
+  taps.push(t);
+  taps = taps.slice(-9);
+  if (taps.length >= 4) {
+    const bpm = (60000 * (taps.length - 1)) / (taps[taps.length - 1] - taps[0]);
+    setAnalysis({ bpm: clampBpm(bpm) });
+    $('analysis-status').textContent = `Tap tempo : ${taps.length} frappes.`;
+  } else {
+    $('analysis-status').textContent = `Tap tempo : continuez (${taps.length}/4)…`;
+  }
+});
 
 function loadSongIntoPlayer() {
   player.load(
@@ -587,8 +721,16 @@ async function renderLibrary() {
       <button class="primary" data-act="open">Ouvrir</button>
       <button data-act="delete">Supprimer</button>`;
     li.querySelector('.song-name').textContent = meta.name;
-    li.querySelector('.song-sub').textContent =
-      `${fmtTime(meta.duration)} · ${new Date(meta.createdAt).toLocaleDateString('fr-FR')} · ${fmtMb(meta.bytes ?? 0)}`;
+    const a = meta.analysis;
+    li.querySelector('.song-sub').textContent = [
+      fmtTime(meta.duration),
+      a && `${a.bpm} BPM`,
+      a && `${keyName(a.tonic, a.mode)} · ${camelot(a.tonic, a.mode)}`,
+      new Date(meta.createdAt).toLocaleDateString('fr-FR'),
+      fmtMb(meta.bytes ?? 0),
+    ]
+      .filter(Boolean)
+      .join(' · ');
     li.querySelector('.cover').style.background = coverGradient(meta.id);
     li.querySelector('[data-act="open"]').addEventListener('click', () =>
       openSong(meta).catch((e) => log(`Ouverture impossible : ${e.message}`)),

@@ -29,7 +29,7 @@ Le MVP sépare et fait écouter ; la V2 ajoute le mixage multi-morceaux ; la V3 
 ### V2 — Mixer plusieurs morceaux
 
 - [ ] Bibliothèque locale des morceaux séparés (liste, recherche, suppression)
-- [ ] Analyse automatique : tempo (BPM), tonalité, notation Camelot pour repérer les tonalités compatibles
+- [x] Analyse automatique : tempo (BPM), tonalité, notation Camelot pour repérer les tonalités compatibles
 - [ ] Projet de mashup : une timeline où l'on place des pistes issues de morceaux différents (ex. voix de A sur instrumental de B)
 - [ ] Calage du tempo (time-stretch) et transposition (pitch-shift) par piste, sans changer l'autre paramètre — pré-calculés dans un Worker à chaque changement, puis lus comme des buffers ordinaires
 - [ ] Grille de mesures et magnétisme sur les temps ; décalage manuel fin
@@ -61,7 +61,7 @@ Versions et licences vérifiées le 25 nov. 2026 (registre npm, cartes Hugging F
 | Alternative WebGPU | `monteslu/htdemucs-web-onnx` (21 morceaux, précision mixte) | — | MIT | À essayer si le modèle retenu est trop lent ou échoue en WebGPU |
 | Isolation cross-origin | coi-serviceworker | 0.1.7 | MIT | Pour SharedArrayBuffer (WASM multithread) sur GitHub Pages |
 | Build | Vite | 8.3.8 | MIT | Node ^20.19 ou ≥ 22.12 |
-| Tempo et tonalité | essentia.js | 0.1.3 | AGPL-3.0 | Alternative BPM seul : web-audio-beat-detector 8.2.39 (MIT) |
+| Tempo et tonalité | Code maison (`src/analysis.js`) | — | — | Retenu à l'étape 4 : aucune dépendance, ne lie pas la licence du dépôt. essentia.js 0.1.3 (AGPL-3.0) a servi d'arbitre lors des tests, sans être livré |
 | Time-stretch / pitch | rubberband-wasm 3.3.0, ou soundtouchjs 0.3.0 / @soundtouchjs/audio-worklet 2.1.1 | — | GPL-2.0 / LGPL-2.1 / MPL-2.0 | Rubber Band = meilleure qualité sur la voix |
 | Police | Inter (variable), @fontsource-variable/inter | 5.3.0 | OFL-1.1 | Auto-hébergée, chiffres tabulaires |
 | Formes d'onde | wavesurfer.js | 8.1.1 | BSD-3-Clause | Ou rendu canvas maison pour la timeline |
@@ -122,6 +122,7 @@ Six étapes, chacune livrée et testée à l'oreille avant la suivante.
 3. **MVP complet** : import, séparation dans un Worker, lecteur multipiste, export WAV, cache IndexedDB. Tester le décodage M4A sous Firefox Linux.
    *Livré et validé à l'écoute le 25 nov. 2026 (Chrome, WebGPU, morceau entier)* : séparation du morceau entier (temps restant, annulation, modèle chargé dès le dépôt du fichier), vue des pistes (forme d'onde, solo, muet, volume, clic pour se placer), export WAV 16 bits par piste et de l'instrumental (encodage dans un Worker), bibliothèque IndexedDB en int16 (original + 4 pistes, environ 42 Mo par piste pour 4 min) ; un fichier déjà séparé s'ouvre sans recalcul. Reste : tester le M4A sous Firefox Linux.
 4. **Analyse** : BPM, tonalité, Camelot, correction manuelle.
+   *Livrée et validée à l'écoute le 25 nov. 2026* : analyse maison sans dépendance, lancée après la séparation dans un Worker (environ 1 s). Tempo mesuré sur la batterie séparée (flux spectral, autocorrélation en peigne, a priori centré sur 120 BPM) ; tonalité sur basse + reste (chroma, profils de Krumhansl). Correction à la main : saisie, ×2, ÷2, tap tempo, choix de la tonalité, retour aux valeurs détectées ; valeurs gardées dans la bibliothèque. Contrôle contre essentia sur 6 morceaux : 5 d'accord à 0,6 BPM près et même tonalité. Limites connues : extraits courts peu fiables ; au-delà de 160 BPM, le tempo peut sortir à moitié (bouton ×2).
 5. **Mashup** : timeline, placement des pistes, time-stretch et pitch-shift, mixage, export du mix, sauvegarde du projet.
 6. **Finitions** : PWA hors ligne, raccourcis clavier, tests sur Chrome, Edge, Firefox et Safari.
 
