@@ -1,0 +1,66 @@
+# CLAUDE.md — Chimère (`chimere`)
+
+Static web app (GitHub Pages) that splits songs into stems (vocals, drums, bass, other)
+and, later, mixes stems from several songs into bootlegs. Everything runs in the browser.
+The spec is `docs/fiche-projet.md` (French); read it before any feature work.
+
+## Hard constraints
+
+- Vanilla JavaScript, ES modules, Vite. No UI framework, no TypeScript build step.
+- No server. Audio files and stems never leave the user's machine.
+- No third-party trackers, analytics, CDN scripts or remote fonts. The only remote fetch
+  allowed is the model from Hugging Face, pinned to a commit hash (see `src/config.js`).
+- Heavy work (inference, time-stretch, encoding) runs in Web Workers, never on the main thread.
+- Audio timing uses the `AudioContext` clock only, never `setTimeout`/`setInterval`.
+- Never commit copyrighted audio. Test files go in `samples/` (git-ignored); demo audio
+  must be Creative Commons.
+- Any new dependency: check its license is AGPL-3.0 compatible and note it in
+  the technical table of `docs/fiche-projet.md`.
+
+## Model facts (HTDemucs, `timcsy/demucs-web-onnx`)
+
+- File `htdemucs_embedded.onnx`, 181 MB, fp32, pinned in `src/config.js`.
+- Inputs: `input` float32 `[1, 2, 343980]` (44.1 kHz stereo, 7.8 s) and `x` float32
+  `[1, 4, 2048, 336]` (STFT real/imag per channel). Outputs: time branch `[1, 4, 2, 343980]`
+  and frequency branch `[1, 4, 4, 2048, 336]`; stem order **drums, bass, other, vocals**.
+- STFT / iSTFT are done in JS by the `demucs-web` package (`prepareModelInput`,
+  `standaloneMask`, `standaloneIspec`); stem = time branch + iSTFT(freq branch).
+- Longer audio = overlap-add (25 % overlap, triangular window) in `src/separate.js`.
+- Cached in the Cache API under `chimere-model-v1`; bump the cache name when changing the model.
+- `StemSplitio/htdemucs-onnx` (waveform-only graph) fails in onnxruntime-web 1.31 with
+  `std::bad_alloc` (fp16 and fp32). Don't switch back without re-testing.
+
+## Known runtime pitfalls
+
+- Multithreaded WASM hangs at session creation when ORT runs inside a Worker (Chromium 156,
+  also with `ort.env.wasm.proxy`). The worker uses 1 thread by default; `?threads=N` opts in,
+  with a 45 s watchdog in `main.js` that restarts in 1 thread. On the main thread 8 threads are
+  ~2x faster but freeze the UI, so don't move inference there.
+- Vite resolves `onnxruntime-web` with the `onnxruntime-web-use-extern-wasm` condition so the
+  Emscripten glue `.mjs` stays a separate file (see `vite.config.js`).
+
+## Layout
+
+- `index.html`, `src/main.js`, `src/style.css` — UI shell (sidebar, views, bottom player; main thread)
+- `src/router.js` — hash router (`#/bibliotheque`, `#/separer`, `#/mashups`, `#/reglages`)
+- `src/worker.js` — model download/cache, ONNX session, per-chunk STFT + inference + iSTFT
+- `src/separate.js` — pure chunking / overlap-add logic (no DOM, no ORT)
+- `src/audio.js` — decoding, resampling, `Player` (bottom bar: load/play/pause/seek, master gain)
+- `src/config.js` — model URL, constants
+- `public/coi-serviceworker.min.js` — copied from node_modules by `npm run prepare-static`
+  (git-ignored); provides COOP/COEP on GitHub Pages
+- `.github/workflows/deploy.yml` — build and deploy to Pages
+
+## Commands
+
+- `npm install`
+- `npm run dev` — dev server with COOP/COEP headers set by Vite
+- `npm run build` / `npm run preview`
+- `npm test` — Node unit tests (`src/separate.js`, `src/router.js`)
+- npm/node live in `~/.local/bin` (not on the default PATH of tool shells)
+
+## Conventions
+
+- UI text in French; code, identifiers and comments in English.
+- Work by the plan steps in the spec; each step ships and is tested by ear before the next.
+- Keep `separate.js` free of browser APIs so it can be unit-tested under Node.

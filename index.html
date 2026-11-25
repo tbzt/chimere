@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Chimère</title>
+    <link rel="icon" href="./logo.svg" type="image/svg+xml" />
+    <!-- Adds COOP/COEP through a service worker (GitHub Pages can't set headers). -->
+    <script src="./coi-serviceworker.min.js"></script>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <a class="brand" href="#/separer" aria-label="Chimère, accueil">
+          <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+            <!-- A creature made of waveforms, one colour per stem. -->
+            <g stroke-linecap="round" stroke-width="3" fill="none">
+              <path d="M4 18v-4M8 22V9" stroke="var(--stem-vocals)" />
+              <path d="M12 25V6M16 21V11" stroke="var(--stem-drums)" />
+              <path d="M20 26V13M24 22V8" stroke="var(--stem-bass)" />
+              <path d="M28 18v-6" stroke="var(--stem-other)" />
+            </g>
+          </svg>
+          <span>Chimère</span>
+        </a>
+        <nav class="nav" aria-label="Navigation principale">
+          <a href="#/bibliotheque" data-route="bibliotheque">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16M9 4v16M14 5l5 15" /></svg>
+            <span>Bibliothèque</span>
+          </a>
+          <a href="#/separer" data-route="separer">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-6 3 12 3-9 2 3h4" /></svg>
+            <span>Séparer</span>
+          </a>
+          <a href="#/mashups" data-route="mashups">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h10M3 12h18M11 17h10" /></svg>
+            <span>Mashups</span>
+          </a>
+          <a href="#/reglages" data-route="reglages">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" /></svg>
+            <span>Réglages</span>
+          </a>
+        </nav>
+        <p class="sidebar-note">Vos morceaux ne quittent pas votre machine.</p>
+      </aside>
+
+      <main class="content">
+        <!-- Bibliothèque -->
+        <section class="view" data-view="bibliotheque" hidden>
+          <h1>Bibliothèque</h1>
+          <div class="empty">
+            <p>Aucun morceau séparé pour l'instant.</p>
+            <p class="muted">Les morceaux que vous séparez seront gardés ici, sur votre machine, pour ne pas les recalculer.</p>
+            <a class="button primary" href="#/separer">Séparer un morceau</a>
+          </div>
+        </section>
+
+        <!-- Séparer -->
+        <section class="view" data-view="separer">
+          <h1>Séparer</h1>
+          <p class="muted lead">
+            Voix, batterie, basse et reste, calculés dans votre navigateur. Seul le modèle
+            (181&nbsp;Mo) est téléchargé, une fois, depuis Hugging Face.
+          </p>
+
+          <div class="card">
+            <div class="card-head">
+              <h2>Modèle</h2>
+              <span class="pill" id="backend-pill">—</span>
+            </div>
+            <button id="load" class="primary">Charger le modèle</button>
+            <progress id="dl" max="1" value="0" hidden></progress>
+            <p id="model-status" class="muted"></p>
+          </div>
+
+          <div class="card">
+            <h2>Morceau</h2>
+            <label id="drop" class="drop">
+              <input type="file" id="file" accept="audio/*,.mp3,.wav,.flac,.m4a" />
+              <span id="drop-text">Glissez un fichier audio ici ou cliquez pour choisir</span>
+            </label>
+            <div class="row">
+              <label>Début de l'extrait (s) <input type="number" id="start" value="30" min="0" step="1" /></label>
+              <label>Durée (s) <input type="number" id="dur" value="30" min="5" max="60" step="1" /></label>
+            </div>
+            <button id="run" class="primary" disabled>Séparer l'extrait</button>
+            <progress id="sep" max="1" value="0" hidden></progress>
+            <p id="sep-status" class="muted"></p>
+          </div>
+
+          <div class="card" id="results" hidden>
+            <h2>Écoute</h2>
+            <p class="muted small">Changer de piste garde la position : pratique pour comparer.</p>
+            <div class="stems" id="players"></div>
+            <dl id="stats"></dl>
+          </div>
+        </section>
+
+        <!-- Mashups -->
+        <section class="view" data-view="mashups" hidden>
+          <h1>Mashups</h1>
+          <div class="empty">
+            <p>Bientôt : la voix d'un morceau sur l'instrumental d'un autre.</p>
+            <p class="muted">Timeline, calage du tempo et de la tonalité, export du mix. Prévu en V2.</p>
+          </div>
+        </section>
+
+        <!-- Réglages -->
+        <section class="view" data-view="reglages" hidden>
+          <h1>Réglages</h1>
+          <div class="card">
+            <h2>Environnement</h2>
+            <dl id="env">
+              <dt>WebGPU</dt><dd id="env-webgpu">…</dd>
+              <dt>Isolation cross-origin</dt><dd id="env-coi">…</dd>
+              <dt>Threads WASM</dt><dd id="env-threads">…</dd>
+              <dt>Backend utilisé</dt><dd id="env-backend">—</dd>
+            </dl>
+            <label class="check"><input type="checkbox" id="force-wasm" /> Forcer le mode WASM (comparaison)</label>
+          </div>
+          <div class="card">
+            <h2>Modèle en cache</h2>
+            <p id="cache-status" class="muted">…</p>
+            <button id="clear-cache" disabled>Supprimer le modèle du cache</button>
+          </div>
+          <div class="card">
+            <h2>Journal</h2>
+            <pre id="log"></pre>
+          </div>
+        </section>
+      </main>
+
+      <footer class="player" id="player" aria-label="Lecteur">
+        <div class="now">
+          <span class="now-dot" id="now-dot"></span>
+          <div class="now-text">
+            <strong id="now-title">Rien en lecture</strong>
+            <span class="muted small" id="now-sub">Séparez un extrait pour l'écouter</span>
+          </div>
+        </div>
+        <div class="transport">
+          <button class="round" id="play" aria-label="Lecture" disabled>
+            <svg viewBox="0 0 24 24" class="icon-play" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+            <svg viewBox="0 0 24 24" class="icon-pause" aria-hidden="true"><path d="M7 5h4v14H7zM13 5h4v14h-4z" /></svg>
+          </button>
+          <div class="seek">
+            <span class="time" id="time-pos">0:00</span>
+            <input type="range" id="seek" min="0" max="1" step="0.01" value="0" aria-label="Position" disabled />
+            <span class="time" id="time-dur">0:00</span>
+          </div>
+        </div>
+        <label class="volume">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9zM16 9a4 4 0 0 1 0 6" /></svg>
+          <input type="range" id="volume" min="0" max="1" step="0.01" value="0.9" aria-label="Volume général" />
+        </label>
+      </footer>
+    </div>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>
