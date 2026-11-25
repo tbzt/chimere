@@ -3,8 +3,8 @@
 import * as ort from 'onnxruntime-web';
 import wasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.jsep.wasm?url';
 import mjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.jsep.mjs?url';
-import { MODEL, MODEL_CACHE, SEGMENT, OVERLAP, STEMS } from './config.js';
-import { separate, hasNaN } from './separate.js';
+import { MODEL, MODEL_CACHE, SEGMENT, OVERLAP, STEMS, CPU_NODES } from './config.js';
+import { separate, checkChunk, mixStats, relativeError } from './separate.js';
 import { prepareModelInput, standaloneMask, standaloneIspec } from 'demucs-web/processor';
 
 ort.env.wasm.wasmPaths = {
@@ -73,6 +73,31 @@ async function webgpuAvailable() {
   }
 }
 
+let pinCpuNodes = true;
+let gpuErrors = 0;
+
+/**
+ * Log the device limits and surface WebGPU validation / out-of-memory errors.
+ * ORT does not report them: a failed dispatch just leaves zeros in the output.
+ */
+async function watchGpuDevice() {
+  const device = await ort.env.webgpu.device;
+  if (!device || device.__chimereWatched) return;
+  device.__chimereWatched = true;
+  const mb = (x) => `${Math.round(x / 2 ** 20)} Mo`;
+  const l = device.limits;
+  log(
+    `WebGPU : tampon max ${mb(l.maxBufferSize)}, liaison max ${mb(l.maxStorageBufferBindingSize)}, ` +
+      `shader-f16 ${device.features.has('shader-f16') ? 'oui' : 'non'}.`,
+  );
+  device.addEventListener('uncapturederror', (e) => {
+    gpuErrors++;
+    if (gpuErrors <= 5) log(`Erreur WebGPU (${e.error?.constructor?.name}) : ${e.error?.message?.slice(0, 400)}`);
+    else if (gpuErrors === 6) log('Erreurs WebGPU suivantes masquées.');
+  });
+  device.lost.then((info) => log(`Carte graphique perdue : ${info.reason} ${info.message}`));
+}
+
 async function createSession(bytes, wanted) {
   // Memory-lean options: the 32-bit WASM heap is limited to 4 GB.
   const options = {
@@ -82,7 +107,12 @@ async function createSession(bytes, wanted) {
   };
   log(`Création de la session ONNX (${wanted})…`);
   if (wanted === 'webgpu') {
-    session = await ort.InferenceSession.create(bytes, { ...options, executionProviders: ['webgpu'] });
+    // ?cpunodes=0 disables the CPU pinning (to re-test plain WebGPU).
+    const pin = pinCpuNodes;
+    const ep = pin ? { name: 'webgpu', forceCpuNodeNames: CPU_NODES } : 'webgpu';
+    session = await ort.InferenceSession.create(bytes, { ...options, executionProviders: [ep] });
+    log(`WebGPU : prologue de normalisation ${pin ? 'sur CPU' : 'sur GPU (?cpunodes=0)'}.`);
+    await watchGpuDevice();
   } else {
     session = await ort.InferenceSession.create(bytes, { ...options, executionProviders: ['wasm'] });
   }
@@ -92,8 +122,9 @@ async function createSession(bytes, wanted) {
   log(`Session ONNX prête (${wanted}${threads ? `, ${threads} thread(s)` : ''}).`);
 }
 
-async function init({ forceWasm, threads }) {
+async function init({ forceWasm, threads, cpuNodes = true }) {
   const t0 = performance.now();
+  pinCpuNodes = cpuNodes;
   if (threads > 1 && self.crossOriginIsolated) ort.env.wasm.numThreads = threads;
   const bytes = await getModelBytes();
   const gpu = await webgpuAvailable();
@@ -114,7 +145,7 @@ async function init({ forceWasm, threads }) {
 }
 
 /** One model call on [2 * SEGMENT] samples; returns [4 stems * 2 ch * SEGMENT]. */
-async function runChunk(input) {
+async function runChunk(input, parts) {
   const left = input.subarray(0, SEGMENT);
   const right = input.subarray(SEGMENT);
   const prep = prepareModelInput(left, right);
@@ -132,6 +163,10 @@ async function runChunk(input) {
     else if (t.dims.length === 5) freq = t.data; // [1, 4, 4, bins, frames]
   }
   if (!time || !freq) throw new Error('Sorties du modèle inattendues');
+  if (parts) {
+    parts.time = Float32Array.from(time);
+    parts.freq = Float32Array.from(freq);
+  }
 
   const specs = standaloneMask(freq);
   const result = new Float32Array(STEMS.length * 2 * SEGMENT);
@@ -157,12 +192,14 @@ async function doSeparate({ left, right }) {
     onProgress: (done, total) => post({ type: 'progress', done, total }),
   };
 
-  let firstChecked = false;
+  // Every chunk is checked: a broken backend can return plausible-looking
+  // zeros instead of NaN. WebGPU errors fall back to WASM below.
   const checkedRun = async (input) => {
     const data = await runChunk(input);
-    if (!firstChecked) {
-      firstChecked = true;
-      if (hasNaN(data)) throw new Error('NaN');
+    const check = checkChunk(input, data, SEGMENT, STEMS.length);
+    if (!check.ok) {
+      if (backend === 'webgpu') throw new Error(`résultat WebGPU incohérent : ${check.reason}`);
+      log(`Attention : fenêtre suspecte en WASM (${check.reason}).`);
     }
     return data;
   };
@@ -173,11 +210,12 @@ async function doSeparate({ left, right }) {
   } catch (e) {
     if (backend !== 'webgpu') throw e;
     log(`Échec en WebGPU (${e.message}). Nouvel essai en WASM.`);
+    post({ type: 'fallback', reason: e.message });
     await session.release();
     const cache = await caches.open(MODEL_CACHE);
     const bytes = new Uint8Array(await (await cache.match(MODEL.url)).arrayBuffer());
     await createSession(bytes, 'wasm');
-    result = await separate(left, right, { ...opts, runChunk });
+    result = await separate(left, right, { ...opts, runChunk: checkedRun });
   }
 
   const stems = {};
@@ -189,6 +227,74 @@ async function doSeparate({ left, right }) {
   post({ type: 'result', stems, backend, ms: performance.now() - t0 }, transfer);
 }
 
+/**
+ * Diagnostic: run the same window through the WebGPU session and a fresh WASM
+ * session, and report how far apart the outputs are (per stem and branch).
+ */
+async function compareBackends({ left, right }) {
+  if (backend !== 'webgpu') throw new Error('La session active n\'est pas en WebGPU : rien à comparer.');
+  const { mean, std } = mixStats(left, right);
+  const input = new Float32Array(2 * SEGMENT);
+  const n = Math.min(SEGMENT, left.length);
+  for (let i = 0; i < n; i++) {
+    input[i] = (left[i] - mean) / std;
+    input[SEGMENT + i] = (right[i] - mean) / std;
+  }
+
+  log('Comparaison : fenêtre en WebGPU…');
+  const gpuParts = {};
+  const errorsBefore = gpuErrors;
+  const gpu = await runChunk(input, gpuParts);
+  const device = await ort.env.webgpu.device;
+  await device.queue.onSubmittedWorkDone();
+  log(`Comparaison : ${gpuErrors - errorsBefore} erreur(s) WebGPU pendant la fenêtre.`);
+
+  log('Comparaison : même fenêtre en WASM (1 thread, environ 30 s)…');
+  const gpuSession = session;
+  const cache = await caches.open(MODEL_CACHE);
+  const bytes = new Uint8Array(await (await cache.match(MODEL.url)).arrayBuffer());
+  session = await ort.InferenceSession.create(bytes, {
+    graphOptimizationLevel: 'basic',
+    enableCpuMemArena: false,
+    enableMemPattern: false,
+    executionProviders: ['wasm'],
+  });
+  const cpuParts = {};
+  let cpu;
+  try {
+    cpu = await runChunk(input, cpuParts);
+  } finally {
+    await session.release();
+    session = gpuSession;
+  }
+
+  const per = (a, b, stride) =>
+    STEMS.map((name, s) => ({
+      name,
+      ...relativeError(a.subarray(s * stride, (s + 1) * stride), b.subarray(s * stride, (s + 1) * stride)),
+    }));
+  const rows = {
+    combined: per(gpu, cpu, 2 * SEGMENT),
+    time: per(gpuParts.time, cpuParts.time, 2 * SEGMENT),
+    freq: per(gpuParts.freq, cpuParts.freq, gpuParts.freq.length / STEMS.length),
+  };
+  const v = STEMS.indexOf('vocals');
+  const pick = (data) => {
+    const l = data.slice(v * 2 * SEGMENT, v * 2 * SEGMENT + n);
+    const r = data.slice((v * 2 + 1) * SEGMENT, (v * 2 + 1) * SEGMENT + n);
+    for (let i = 0; i < n; i++) {
+      l[i] = l[i] * std + mean;
+      r[i] = r[i] * std + mean;
+    }
+    return [l, r];
+  };
+  const vocalsGpu = pick(gpu);
+  const vocalsCpu = pick(cpu);
+  post({ type: 'compare', rows, vocalsGpu, vocalsCpu }, [
+    vocalsGpu[0].buffer, vocalsGpu[1].buffer, vocalsCpu[0].buffer, vocalsCpu[1].buffer,
+  ]);
+}
+
 {
   self.addEventListener('message', async (ev) => {
     const msg = ev.data;
@@ -196,6 +302,7 @@ async function doSeparate({ left, right }) {
     try {
       if (msg.type === 'init') await init(msg);
       else if (msg.type === 'separate') await doSeparate(msg);
+      else if (msg.type === 'compare') await compareBackends(msg);
     } catch (e) {
       post({ type: 'error', text: e?.message || String(e) });
     }

@@ -120,6 +120,18 @@
             <label class="check"><input type="checkbox" id="force-wasm" /> Forcer le mode WASM (comparaison)</label>
           </div>
           <div class="card">
+            <h2>Diagnostic WebGPU</h2>
+            <p class="muted small">
+              Passe la première fenêtre (7,8&nbsp;s) de l'extrait choisi dans <em>Séparer</em> en WebGPU
+              puis en WASM, et mesure l'écart. Un écart de plus de quelques pourcents signale un calcul
+              faux sur la carte graphique.
+            </p>
+            <button id="compare" disabled>Comparer WebGPU et WASM</button>
+            <p id="compare-status" class="muted small"></p>
+            <table id="compare-table" class="table" hidden></table>
+            <div class="stems" id="compare-players"></div>
+          </div>
+          <div class="card">
             <h2>Modèle en cache</h2>
             <p id="cache-status" class="muted">…</p>
             <button id="clear-cache" disabled>Supprimer le modèle du cache</button>

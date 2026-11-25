@@ -95,6 +95,49 @@ export async function separate(left, right, { segment, overlap, stemCount, runCh
   return out;
 }
 
+/** RMS of a, b and (a - b), and rms(a - b) / rms(b). */
+export function relativeError(a, b) {
+  let sa = 0;
+  let sb = 0;
+  let sd = 0;
+  for (let i = 0; i < b.length; i++) {
+    sa += a[i] * a[i];
+    sb += b[i] * b[i];
+    sd += (a[i] - b[i]) ** 2;
+  }
+  const n = Math.max(1, b.length);
+  const rmsA = Math.sqrt(sa / n);
+  const rmsB = Math.sqrt(sb / n);
+  const rmsDiff = Math.sqrt(sd / n);
+  return { rmsA, rmsB, rmsDiff, rel: rmsB > 0 ? rmsDiff / rmsB : rmsDiff };
+}
+
+/**
+ * Sanity check of one model call. Demucs stems add up to the mix, so the sum
+ * of the stems must be close to the input; a backend that computes garbage
+ * (e.g. all zeros on some WebGPU drivers) fails this.
+ * @param {Float32Array} input  [2 * segment]
+ * @param {Float32Array} output [stemCount * 2 * segment]
+ * @returns {{ ok: boolean, residual: number, reason?: string }}
+ */
+export function checkChunk(input, output, segment, stemCount, maxResidual = 0.3) {
+  if (hasNaN(output)) return { ok: false, residual: NaN, reason: 'NaN' };
+  let si = 0;
+  let sd = 0;
+  for (let i = 0; i < 2 * segment; i++) {
+    let sum = 0;
+    for (let s = 0; s < stemCount; s++) sum += output[s * 2 * segment + i];
+    si += input[i] * input[i];
+    sd += (sum - input[i]) ** 2;
+  }
+  // Near-silent input: nothing meaningful to compare.
+  if (si / (2 * segment) < 1e-8) return { ok: true, residual: 0 };
+  const residual = Math.sqrt(sd / si);
+  return residual <= maxResidual
+    ? { ok: true, residual }
+    : { ok: false, residual, reason: `somme des pistes ≠ entrée (écart ${(residual * 100).toFixed(0)} %)` };
+}
+
 export function hasNaN(arr) {
   for (let i = 0; i < arr.length; i++) if (Number.isNaN(arr[i])) return true;
   return false;

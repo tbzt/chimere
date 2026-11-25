@@ -36,6 +36,13 @@ The spec is `docs/fiche-projet.md` (French); read it before any feature work.
   also with `ort.env.wasm.proxy`). The worker uses 1 thread by default; `?threads=N` opts in,
   with a 45 s watchdog in `main.js` that restarts in 1 thread. On the main thread 8 threads are
   ~2x faster but freeze the UI, so don't move inference there.
+- WebGPU can silently return all-zero stems (no error) on a misconfigured browser: seen with
+  Chrome launched with `--use-angle=vulkan --ozone-platform=wayland` (GTX 1060, Ubuntu). A clean
+  Chrome matches WASM within 1 %. Every chunk goes through `checkChunk` (stems must add up to
+  the input); on WebGPU a failure re-runs the whole separation in WASM. Réglages → *Diagnostic
+  WebGPU* compares both backends and logs device limits and uncaptured WebGPU errors. The graph's
+  normalisation prologue (`CPU_NODES`) is pinned to CPU as `monteslu/htdemucs-web-onnx` advises;
+  not proven necessary here (`?cpunodes=0` disables it).
 - Vite resolves `onnxruntime-web` with the `onnxruntime-web-use-extern-wasm` condition so the
   Emscripten glue `.mjs` stays a separate file (see `vite.config.js`).
 

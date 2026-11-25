@@ -29,6 +29,7 @@ function log(text) {
 
 function updateRunButton() {
   $('run').disabled = !(ready && decoded);
+  $('compare').disabled = !(ready && decoded && $('env-backend').textContent === 'WebGPU');
 }
 
 // --- Environment (main thread view; the worker confirms its own) ---
@@ -81,7 +82,8 @@ function startWorker(threadsOverride) {
   worker.addEventListener('error', (e) => log(`Erreur du worker : ${e.message}`));
   // ?threads=N asks for multithreaded WASM (hangs in a Worker on some browsers).
   const threads = threadsOverride ?? (Number(new URLSearchParams(location.search).get('threads')) || 1);
-  worker.postMessage({ type: 'init', forceWasm: $('force-wasm').checked, threads });
+  const cpuNodes = new URLSearchParams(location.search).get('cpunodes') !== '0';
+  worker.postMessage({ type: 'init', forceWasm: $('force-wasm').checked, threads, cpuNodes });
 }
 
 function onWorkerMessage({ data: msg }) {
@@ -138,11 +140,19 @@ function onWorkerMessage({ data: msg }) {
     case 'result':
       onResult(msg);
       break;
+    case 'fallback':
+      $('sep-status').textContent =
+        'WebGPU donne un résultat faux sur ce navigateur : nouvelle séparation en WASM, plus lente…';
+      break;
+    case 'compare':
+      onCompare(msg);
+      break;
     case 'error':
       log(`Erreur : ${msg.text}`);
       $('sep-status').textContent = `Erreur : ${msg.text}`;
       $('load').disabled = false;
-      $('run').disabled = !ready || !decoded;
+      $('compare-status').textContent = '';
+      updateRunButton();
       break;
   }
 }
@@ -202,6 +212,64 @@ function onResult({ stems, backend, ms }) {
   // Step 1 goal: play the vocals alone right away.
   box.firstElementChild.click();
 }
+
+// --- WebGPU / WASM diagnostic ---
+function onCompare({ rows, vocalsGpu, vocalsCpu }) {
+  updateRunButton();
+  const pct = (x) => `${(x * 100).toFixed(x < 0.01 ? 2 : 1)} %`;
+  const worst = Math.max(...rows.combined.map((r) => r.rel));
+  $('compare-status').textContent =
+    worst < 0.02
+      ? `Écart maximal ${pct(worst)} : WebGPU calcule comme WASM. Les artefacts viennent d'ailleurs.`
+      : `Écart maximal ${pct(worst)} : WebGPU donne un résultat différent de WASM sur ce navigateur.`;
+  const t = $('compare-table');
+  t.hidden = false;
+  t.innerHTML = '<tr><th>Piste</th><th>Écart total</th><th>Branche temps</th><th>Branche fréquence</th><th>Niveau WebGPU / WASM</th></tr>';
+  rows.combined.forEach((r, i) => {
+    const tr = document.createElement('tr');
+    const cells = [
+      STEM_LABELS[r.name],
+      pct(r.rel),
+      pct(rows.time[i].rel),
+      pct(rows.freq[i].rel),
+      `${r.rmsA.toFixed(3)} / ${r.rmsB.toFixed(3)}`,
+    ];
+    cells.forEach((c, j) => {
+      const td = document.createElement('td');
+      td.textContent = c;
+      if (j >= 1 && j <= 3 && [r.rel, rows.time[i].rel, rows.freq[i].rel][j - 1] > 0.02) td.className = 'bad';
+      tr.append(td);
+    });
+    t.append(tr);
+  });
+  log(`Comparaison WebGPU / WASM : ${rows.combined.map((r) => `${r.name} ${pct(r.rel)}`).join(', ')}.`);
+
+  const box = $('compare-players');
+  box.innerHTML = '';
+  for (const [id, label, [l, r]] of [
+    ['cmp-gpu', 'Voix WebGPU', vocalsGpu],
+    ['cmp-cpu', 'Voix WASM', vocalsCpu],
+  ]) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.style.setProperty('--c', 'var(--stem-vocals)');
+    b.addEventListener('click', () => {
+      const same = player.meta?.excerpt === 'compare';
+      player.load(l, r, { id, label, color: '--stem-vocals', excerpt: 'compare', sub: 'Diagnostic, 7,8 s' }, { keepPosition: same });
+      player.play();
+    });
+    box.append(b);
+  }
+}
+
+$('compare').addEventListener('click', () => {
+  player.pause();
+  const start = Number($('start').value) || 0;
+  const { left, right } = extract(decoded, start, 7.8);
+  $('compare').disabled = true;
+  $('compare-status').textContent = 'Comparaison en cours (environ 30 s en WASM)…';
+  worker.postMessage({ type: 'compare', left, right }, [left.buffer, right.buffer]);
+});
 
 // --- Bottom player ---
 let excerptId = 0;
